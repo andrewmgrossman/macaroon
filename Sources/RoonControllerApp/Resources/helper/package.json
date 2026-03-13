@@ -1,0 +1,16 @@
+{
+  "name": "roon-controller-helper",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Node helper for the macOS Roon controller app",
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "node-roon-api": "git+https://github.com/RoonLabs/node-roon-api.git",
+    "node-roon-api-browse": "git+https://github.com/RoonLabs/node-roon-api-browse.git",
+    "node-roon-api-image": "git+https://github.com/RoonLabs/node-roon-api-image.git",
+    "node-roon-api-transport": "git+https://github.com/RoonLabs/node-roon-api-transport.git"
+  }
+}
