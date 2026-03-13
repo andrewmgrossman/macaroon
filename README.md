@@ -5,9 +5,9 @@ Native macOS controller shell for a Roon Server, implemented as a SwiftUI app wi
 ## Structure
 
 - `Package.swift`: Swift package manifest for the macOS app target and tests.
-- `Sources/RoonControllerApp`: SwiftUI app, bridge client, models, and bundled helper resources.
-- `Sources/RoonControllerApp/Resources/helper`: Node helper project that integrates with Roon's official JavaScript API.
-- `Tests/RoonControllerTests`: Swift-side tests for bridge payload decoding.
+- `Sources/Macaroon`: SwiftUI app, bridge client, models, and bundled helper resources.
+- `Sources/Macaroon/Resources/helper`: Node helper project that integrates with Roon's official JavaScript API.
+- `Tests/MacaroonTests`: Swift-side tests for bridge payload decoding.
 
 ## Development
 
@@ -16,7 +16,7 @@ Native macOS controller shell for a Roon Server, implemented as a SwiftUI app wi
 ```bash
 swift build
 swift test
-swift run RoonControllerApp
+swift run Macaroon
 ```
 
 ### Helper
@@ -24,7 +24,7 @@ swift run RoonControllerApp
 The helper requires Node.js plus the official Roon API packages:
 
 ```bash
-cd Sources/RoonControllerApp/Resources/helper
+cd Sources/Macaroon/Resources/helper
 npm install
 npm test
 ```

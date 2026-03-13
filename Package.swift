@@ -2,28 +2,28 @@
 import PackageDescription
 
 let package = Package(
-    name: "RoonController",
+    name: "Macaroon",
     platforms: [
         .macOS(.v14)
     ],
     products: [
         .executable(
             name: "Macaroon",
-            targets: ["RoonControllerApp"]
+            targets: ["Macaroon"]
         )
     ],
     targets: [
         .executableTarget(
-            name: "RoonControllerApp",
-            path: "Sources/RoonControllerApp",
+            name: "Macaroon",
+            path: "Sources/Macaroon",
             resources: [
                 .copy("Resources")
             ]
         ),
         .testTarget(
-            name: "RoonControllerTests",
-            dependencies: ["RoonControllerApp"],
-            path: "Tests/RoonControllerTests"
+            name: "MacaroonTests",
+            dependencies: ["Macaroon"],
+            path: "Tests/MacaroonTests"
         )
     ]
 )
