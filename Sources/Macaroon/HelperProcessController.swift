@@ -350,7 +350,12 @@ final class MockBridgeService: BridgeService {
                     zoneID: "zone-1",
                     displayName: "Living Room",
                     state: "stopped",
-                    outputs: [OutputSummary(outputID: "output-1", zoneID: "zone-1", displayName: "Living Room Output")],
+                    outputs: [OutputSummary(
+                        outputID: "output-1",
+                        zoneID: "zone-1",
+                        displayName: "Living Room Output",
+                        volume: OutputVolume(type: "number", min: 0, max: 100, value: 42, step: 1, isMuted: false)
+                    )],
                     capabilities: .init(canPlayPause: true, canPause: true, canPlay: true, canStop: true, canNext: true, canPrevious: true, canSeek: false),
                     nowPlaying: nil
                 )
@@ -410,6 +415,10 @@ final class MockBridgeService: BridgeService {
                 return typed
             }
         case "browse.performAction":
+            if let typed = EmptyResult() as? Result {
+                return typed
+            }
+        case "transport.seek", "transport.changeVolume":
             if let typed = EmptyResult() as? Result {
                 return typed
             }

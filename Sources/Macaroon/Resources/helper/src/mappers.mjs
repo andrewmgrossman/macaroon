@@ -63,7 +63,17 @@ export function toZoneSummary(zone) {
     outputs: (zone.outputs ?? []).map((output) => ({
       outputID: output.output_id,
       zoneID: output.zone_id,
-      displayName: output.display_name
+      displayName: output.display_name,
+      volume: output.volume
+        ? {
+            type: output.volume.type ?? "number",
+            min: output.volume.min ?? null,
+            max: output.volume.max ?? null,
+            value: output.volume.value ?? null,
+            step: output.volume.step ?? null,
+            isMuted: output.volume.is_muted ?? null
+          }
+        : null
     })),
     capabilities: {
       canPlayPause: Boolean(zone.is_play_allowed || zone.is_pause_allowed),

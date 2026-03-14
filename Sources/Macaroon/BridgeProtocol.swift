@@ -86,6 +86,24 @@ struct TransportCommandParams: Codable, Equatable, Sendable {
     var command: TransportCommand
 }
 
+enum VolumeChangeMode: String, Codable, Equatable, Sendable {
+    case absolute
+    case relative
+    case relativeStep = "relative_step"
+}
+
+struct TransportSeekParams: Codable, Equatable, Sendable {
+    var zoneOrOutputID: String
+    var how: String
+    var seconds: Double
+}
+
+struct TransportVolumeParams: Codable, Equatable, Sendable {
+    var outputID: String
+    var how: VolumeChangeMode
+    var value: Double
+}
+
 struct ImageFetchParams: Codable, Equatable, Sendable {
     var imageKey: String
     var width: Int

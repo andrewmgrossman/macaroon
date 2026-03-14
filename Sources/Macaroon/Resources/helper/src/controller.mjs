@@ -40,6 +40,20 @@ export class RoonBridgeController {
     });
   }
 
+  #sessionContextForHierarchy(hierarchy) {
+    if (hierarchy === "search") {
+      return {
+        requestHierarchy: "browse",
+        multiSessionKey: "macaroon-search"
+      };
+    }
+
+    return {
+      requestHierarchy: hierarchy,
+      multiSessionKey: null
+    };
+  }
+
   async handle(message) {
     switch (message.method) {
       case "connect.auto":
@@ -109,6 +123,12 @@ export class RoonBridgeController {
         return {};
       case "transport.command":
         await this.#transport(message.params.zoneOrOutputID, message.params.command);
+        return {};
+      case "transport.seek":
+        await this.#seek(message.params.zoneOrOutputID, message.params.how, message.params.seconds);
+        return {};
+      case "transport.changeVolume":
+        await this.#changeVolume(message.params.outputID, message.params.how, message.params.value);
         return {};
       case "image.fetch":
         return await this.#fetchImage(message.params);
@@ -473,8 +493,9 @@ export class RoonBridgeController {
   }
 
   async #browse({ hierarchy, zoneOrOutputID, itemKey = undefined, input = undefined, popAll = false, popLevels = undefined, refreshList = false }) {
+    const sessionContext = this.#sessionContextForHierarchy(hierarchy);
     const options = {
-      hierarchy,
+      hierarchy: sessionContext.requestHierarchy,
       zone_or_output_id: zoneOrOutputID ?? undefined,
       item_key: itemKey,
       input,
@@ -482,6 +503,9 @@ export class RoonBridgeController {
       pop_levels: popLevels,
       refresh_list: refreshList || undefined
     };
+    if (sessionContext.multiSessionKey) {
+      options.multi_session_key = sessionContext.multiSessionKey;
+    }
 
     const result = await this.#browseRequest(options);
 
@@ -495,6 +519,9 @@ export class RoonBridgeController {
         hierarchy,
         item: toBrowseItem(result.item)
       });
+      if (input !== undefined) {
+        await this.#refreshCurrentBrowseList(hierarchy);
+      }
       return;
     }
 
@@ -503,6 +530,9 @@ export class RoonBridgeController {
         hierarchy,
         itemKey
       });
+      if (input !== undefined) {
+        await this.#refreshCurrentBrowseList(hierarchy);
+      }
       return;
     }
 
@@ -510,26 +540,39 @@ export class RoonBridgeController {
       const offset = Math.max(result.list.display_offset ?? 0, 0);
       this.browseSessions.set(hierarchy, {
         list: result.list,
-        selectedZoneID: zoneOrOutputID ?? null
+        selectedZoneID: zoneOrOutputID ?? null,
+        requestHierarchy: sessionContext.requestHierarchy,
+        multiSessionKey: sessionContext.multiSessionKey
       });
       await this.#loadBrowsePage(hierarchy, offset, 100);
+      return;
+    }
+
+    if (input !== undefined && result.action === "none") {
+      await this.#refreshCurrentBrowseList(hierarchy);
     }
   }
 
   async #loadBrowsePage(hierarchy, offset = 0, count = 100) {
     const state = this.browseSessions.get(hierarchy);
+    const sessionContext = this.#sessionContextForHierarchy(hierarchy);
 
     const result = await this.#loadRequest({
-      hierarchy,
+      hierarchy: state?.requestHierarchy ?? sessionContext.requestHierarchy,
       offset,
       count,
-      set_display_offset: offset
+      set_display_offset: offset,
+      ...(state?.multiSessionKey ?? sessionContext.multiSessionKey
+        ? { multi_session_key: state?.multiSessionKey ?? sessionContext.multiSessionKey }
+        : {})
     });
 
     const list = result.list ?? state?.list;
     this.browseSessions.set(hierarchy, {
       list,
-      selectedZoneID: state?.selectedZoneID ?? null
+      selectedZoneID: state?.selectedZoneID ?? null,
+      requestHierarchy: state?.requestHierarchy ?? sessionContext.requestHierarchy,
+      multiSessionKey: state?.multiSessionKey ?? sessionContext.multiSessionKey
     });
 
     this.emit("browse.listChanged", {
@@ -543,12 +586,52 @@ export class RoonBridgeController {
     });
   }
 
+  async #refreshCurrentBrowseList(hierarchy) {
+    const state = this.browseSessions.get(hierarchy);
+    if (!state?.list) {
+      return;
+    }
+
+    const offset = Math.max(state.list.display_offset ?? 0, 0);
+    await this.#loadBrowsePage(hierarchy, offset, 100);
+  }
+
   async #transport(zoneOrOutputID, command) {
     const core = this.#ensureCore();
     const transport = core.services.RoonApiTransport;
 
     await new Promise((resolve, reject) => {
       transport.control(zoneOrOutputID, command, (error) => {
+        if (error) {
+          reject(new Error(error));
+          return;
+        }
+        resolve();
+      });
+    });
+  }
+
+  async #seek(zoneOrOutputID, how, seconds) {
+    const core = this.#ensureCore();
+    const transport = core.services.RoonApiTransport;
+
+    await new Promise((resolve, reject) => {
+      transport.seek(zoneOrOutputID, how, seconds, (error) => {
+        if (error) {
+          reject(new Error(error));
+          return;
+        }
+        resolve();
+      });
+    });
+  }
+
+  async #changeVolume(outputID, how, value) {
+    const core = this.#ensureCore();
+    const transport = core.services.RoonApiTransport;
+
+    await new Promise((resolve, reject) => {
+      transport.change_volume(outputID, how, value, (error) => {
         if (error) {
           reject(new Error(error));
           return;
@@ -594,6 +677,7 @@ export class RoonBridgeController {
   }
 
   async #contextActions({ hierarchy, itemKey, zoneOrOutputID }) {
+    const sessionContext = this.#sessionContextForHierarchy(hierarchy);
     const { title, actions, popLevels } = await this.#resolveActionsInCurrentSession({
       hierarchy,
       itemKey,
@@ -608,10 +692,15 @@ export class RoonBridgeController {
       };
     } finally {
       if (popLevels > 0) {
-        await this.#browseRequest({
-          hierarchy,
-          pop_levels: popLevels
-        });
+        try {
+          await this.#browseRequest({
+            hierarchy: sessionContext.requestHierarchy,
+            pop_levels: popLevels,
+            ...(sessionContext.multiSessionKey ? { multi_session_key: sessionContext.multiSessionKey } : {})
+          });
+        } catch {
+          // Ignore menu-cleanup failures. The user only needs the resolved actions.
+        }
       }
     }
   }
@@ -628,9 +717,10 @@ export class RoonBridgeController {
     }
 
     await this.#browseRequest({
-      hierarchy,
+      hierarchy: sessionContext.requestHierarchy,
       item_key: itemKey,
-      zone_or_output_id: zoneOrOutputID ?? undefined
+      zone_or_output_id: zoneOrOutputID ?? undefined,
+      ...(sessionContext.multiSessionKey ? { multi_session_key: sessionContext.multiSessionKey } : {})
     });
   }
 
@@ -665,6 +755,7 @@ export class RoonBridgeController {
   }
 
   async #resolveListForSession({ hierarchy, sessionKey, result, zoneOrOutputID }) {
+    const sessionContext = this.#sessionContextForHierarchy(hierarchy);
     if (result.action === "message") {
       throw new Error(result.message);
     }
@@ -675,13 +766,15 @@ export class RoonBridgeController {
 
     const offset = Math.max(result.list.display_offset ?? 0, 0);
     const loadOptions = {
-      hierarchy,
+      hierarchy: sessionContext.requestHierarchy,
       offset,
       count: 100,
       set_display_offset: offset
     };
     if (sessionKey) {
       loadOptions.multi_session_key = sessionKey;
+    } else if (sessionContext.multiSessionKey) {
+      loadOptions.multi_session_key = sessionContext.multiSessionKey;
     }
 
     const loaded = await this.#loadRequest(loadOptions);
@@ -694,12 +787,14 @@ export class RoonBridgeController {
   }
 
   async #resolveActionsInCurrentSession({ hierarchy, itemKey, zoneOrOutputID }) {
+    const sessionContext = this.#sessionContextForHierarchy(hierarchy);
     const baselineLevel = this.browseSessions.get(hierarchy)?.list?.level ?? 0;
 
     const topLevelResult = await this.#browseRequest({
-      hierarchy,
+      hierarchy: sessionContext.requestHierarchy,
       item_key: itemKey,
-      zone_or_output_id: zoneOrOutputID ?? undefined
+      zone_or_output_id: zoneOrOutputID ?? undefined,
+      ...(sessionContext.multiSessionKey ? { multi_session_key: sessionContext.multiSessionKey } : {})
     });
 
     const topLevelList = await this.#resolveListForSession({
@@ -723,9 +818,10 @@ export class RoonBridgeController {
     }
 
     const actionsResult = await this.#browseRequest({
-      hierarchy,
+      hierarchy: sessionContext.requestHierarchy,
       item_key: actionListItem.item_key,
-      zone_or_output_id: zoneOrOutputID ?? undefined
+      zone_or_output_id: zoneOrOutputID ?? undefined,
+      ...(sessionContext.multiSessionKey ? { multi_session_key: sessionContext.multiSessionKey } : {})
     });
 
     const actionsList = await this.#resolveListForSession({
@@ -743,12 +839,14 @@ export class RoonBridgeController {
   }
 
   async #performResolvedContextAction({ hierarchy, contextItemKey, actionTitle, zoneOrOutputID }) {
+    const sessionContext = this.#sessionContextForHierarchy(hierarchy);
     const resolved = await this.#resolveActionsInCurrentSession({
       hierarchy,
       itemKey: contextItemKey,
       zoneOrOutputID
     });
 
+    let actionError = null;
     try {
       const action = resolved.actions.find((candidate) =>
         candidate.title?.localeCompare(actionTitle, undefined, { sensitivity: "accent" }) === 0
@@ -759,16 +857,27 @@ export class RoonBridgeController {
       }
 
       await this.#browseRequest({
-        hierarchy,
+        hierarchy: sessionContext.requestHierarchy,
         item_key: action.item_key,
-        zone_or_output_id: zoneOrOutputID ?? undefined
+        zone_or_output_id: zoneOrOutputID ?? undefined,
+        ...(sessionContext.multiSessionKey ? { multi_session_key: sessionContext.multiSessionKey } : {})
       });
+    } catch (error) {
+      actionError = error;
+      throw error;
     } finally {
       if (resolved.popLevels > 0) {
-        await this.#browseRequest({
-          hierarchy,
-          pop_levels: resolved.popLevels
-        });
+        try {
+          await this.#browseRequest({
+            hierarchy: sessionContext.requestHierarchy,
+            pop_levels: resolved.popLevels,
+            ...(sessionContext.multiSessionKey ? { multi_session_key: sessionContext.multiSessionKey } : {})
+          });
+        } catch (cleanupError) {
+          if (actionError) {
+            this.emitError("browse.action_cleanup_failed", cleanupError.message);
+          }
+        }
       }
     }
   }

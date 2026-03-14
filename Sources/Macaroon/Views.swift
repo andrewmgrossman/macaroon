@@ -288,7 +288,7 @@ private struct MiniPlayerBar: View {
         VStack(spacing: 0) {
             Divider()
 
-            HStack(spacing: 16) {
+            HStack(spacing: 20) {
                 if let nowPlaying = model.selectedZone?.nowPlaying {
                     HStack(spacing: 14) {
                         ArtworkView(
@@ -319,54 +319,207 @@ private struct MiniPlayerBar: View {
 
                 Spacer(minLength: 24)
 
-                HStack(spacing: 14) {
-                    MiniPlayerButton(systemName: "backward.fill", enabled: model.selectedZone?.capabilities.canPrevious == true) {
-                        model.transport(.previous)
-                    }
-                    MiniPlayerButton(
-                        systemName: "playpause.fill",
-                        enabled: (model.selectedZone?.capabilities.canPlayPause == true) ||
-                            ((model.selectedZone?.capabilities.canPlay == true) && (model.selectedZone?.capabilities.canPause == true))
-                    ) {
-                        model.transport(.playPause)
-                    }
-                    MiniPlayerButton(systemName: "forward.fill", enabled: model.selectedZone?.capabilities.canNext == true) {
-                        model.transport(.next)
-                    }
-                }
+                MiniPlayerTransportSection()
 
                 Spacer(minLength: 24)
 
                 HStack(spacing: 12) {
-                    if let core = model.currentCore {
-                        VStack(alignment: .trailing, spacing: 2) {
-                            Text(core.displayName)
-                                .font(.system(size: 12, weight: .semibold))
-                            Text(model.selectedZone?.displayName ?? "Choose a Zone")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                    VStack(alignment: .trailing, spacing: 10) {
+                        Picker("Zone", selection: Binding(
+                            get: { model.selectedZoneID ?? "" },
+                            set: { zoneID in
+                                model.selectedZoneID = zoneID.isEmpty ? nil : zoneID
+                                model.refreshBrowse()
+                            }
+                        )) {
+                            ForEach(model.zones) { zone in
+                                Text(zone.displayName).tag(zone.zoneID)
+                            }
                         }
-                    }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .frame(width: 200)
 
-                    Picker("Zone", selection: Binding(
-                        get: { model.selectedZoneID ?? "" },
-                        set: { zoneID in
-                            model.selectedZoneID = zoneID.isEmpty ? nil : zoneID
-                            model.refreshBrowse()
-                        }
-                    )) {
-                        ForEach(model.zones) { zone in
-                            Text(zone.displayName).tag(zone.zoneID)
-                        }
+                        MiniPlayerVolumeControl()
+                            .frame(width: 200, alignment: .trailing)
                     }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .frame(width: 190)
                 }
             }
             .padding(.horizontal, 18)
             .padding(.vertical, 12)
             .background(.regularMaterial)
+        }
+    }
+}
+
+private struct MiniPlayerTransportSection: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        VStack(spacing: 10) {
+            MiniPlayerProgressSection()
+
+            HStack(spacing: 14) {
+                MiniPlayerButton(systemName: "backward.fill", enabled: model.selectedZone?.capabilities.canPrevious == true) {
+                    model.transport(.previous)
+                }
+                MiniPlayerButton(
+                    systemName: "playpause.fill",
+                    enabled: (model.selectedZone?.capabilities.canPlayPause == true) ||
+                        ((model.selectedZone?.capabilities.canPlay == true) && (model.selectedZone?.capabilities.canPause == true))
+                ) {
+                    model.transport(.playPause)
+                }
+                MiniPlayerButton(systemName: "forward.fill", enabled: model.selectedZone?.capabilities.canNext == true) {
+                    model.transport(.next)
+                }
+            }
+        }
+        .frame(width: 460)
+    }
+}
+
+private struct MiniPlayerProgressSection: View {
+    @Environment(AppModel.self) private var model
+    @State private var isScrubbing = false
+    @State private var scrubValue = 0.0
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            VStack(spacing: 4) {
+                Slider(
+                    value: Binding(
+                        get: {
+                            if isScrubbing {
+                                return scrubValue
+                            }
+                            return resolvedSeekPosition(at: context.date)
+                        },
+                        set: { newValue in
+                            scrubValue = newValue
+                        }
+                    ),
+                    in: 0...max(trackLength, 1),
+                    onEditingChanged: { editing in
+                        isScrubbing = editing
+                        if editing == false {
+                            model.seek(to: scrubValue)
+                        }
+                    }
+                )
+                .disabled(model.selectedZone?.capabilities.canSeek != true || trackLength <= 0)
+
+                HStack {
+                    Text(formatTime(isScrubbing ? scrubValue : resolvedSeekPosition(at: context.date)))
+                    Spacer()
+                    Text(formatTime(trackLength))
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            }
+            .onAppear {
+                syncScrubValue()
+            }
+            .onChange(of: model.selectedZone?.zoneID) { _, _ in
+                syncScrubValue()
+            }
+            .onChange(of: model.selectedZone?.nowPlaying?.seekPosition) { _, _ in
+                if isScrubbing == false {
+                    syncScrubValue()
+                }
+            }
+            .onChange(of: model.selectedZone?.nowPlaying?.length) { _, _ in
+                if isScrubbing == false {
+                    syncScrubValue()
+                }
+            }
+        }
+    }
+
+    private var trackLength: Double {
+        model.selectedZone?.nowPlaying?.length ?? 0
+    }
+
+    private func resolvedSeekPosition(at date: Date) -> Double {
+        min(max(0, model.displayedSeekPosition(at: date) ?? 0), max(trackLength, 1))
+    }
+
+    private func syncScrubValue() {
+        scrubValue = min(max(0, model.displayedSeekPosition() ?? 0), max(trackLength, 1))
+    }
+
+    private func formatTime(_ seconds: Double) -> String {
+        guard seconds.isFinite else {
+            return "--:--"
+        }
+        let total = max(0, Int(seconds.rounded(.down)))
+        let minutes = total / 60
+        let secs = total % 60
+        return String(format: "%d:%02d", minutes, secs)
+    }
+}
+
+private struct MiniPlayerVolumeControl: View {
+    @Environment(AppModel.self) private var model
+    @State private var isEditing = false
+    @State private var volumeValue = 0.0
+
+    var body: some View {
+        if let output = model.selectedVolumeOutput, let volume = output.volume {
+            if volume.supportsSlider {
+                HStack(spacing: 8) {
+                    Image(systemName: "speaker.wave.2.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+
+                    Slider(
+                        value: Binding(
+                            get: { isEditing ? volumeValue : (output.volume?.value ?? volumeValue) },
+                            set: { newValue in
+                                volumeValue = newValue
+                                model.setVolume(newValue)
+                            }
+                        ),
+                        in: (volume.min ?? 0)...(volume.max ?? 100),
+                        onEditingChanged: { editing in
+                            isEditing = editing
+                            if editing == false {
+                                model.setVolume(volumeValue, immediate: true)
+                            }
+                        }
+                    )
+                    .frame(width: 150)
+                }
+                .onAppear {
+                    volumeValue = volume.value ?? volume.min ?? 0
+                }
+                .onChange(of: output.outputID) { _, _ in
+                    if isEditing == false {
+                        volumeValue = output.volume?.value ?? output.volume?.min ?? 0
+                    }
+                }
+                .onChange(of: output.volume?.value) { _, newValue in
+                    if isEditing == false {
+                        volumeValue = newValue ?? output.volume?.min ?? 0
+                    }
+                }
+            } else if volume.supportsStepAdjustments {
+                HStack(spacing: 6) {
+                    Button {
+                        model.stepVolume(by: -1)
+                    } label: {
+                        Image(systemName: "speaker.minus.fill")
+                    }
+                    .buttonStyle(.borderless)
+
+                    Button {
+                        model.stepVolume(by: 1)
+                    } label: {
+                        Image(systemName: "speaker.plus.fill")
+                    }
+                    .buttonStyle(.borderless)
+                }
+            }
         }
     }
 }

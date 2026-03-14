@@ -13,7 +13,19 @@ test("toZoneSummary maps transport flags and now playing", () => {
     is_next_allowed: true,
     is_previous_allowed: false,
     is_seek_allowed: true,
-    outputs: [{ output_id: "output-1", zone_id: "zone-1", display_name: "Office DAC" }],
+    outputs: [{
+      output_id: "output-1",
+      zone_id: "zone-1",
+      display_name: "Office DAC",
+      volume: {
+        type: "db",
+        min: -80,
+        max: 0,
+        value: -21.5,
+        step: 0.5,
+        is_muted: false
+      }
+    }],
     now_playing: {
       image_key: "abc123",
       seek_position: 12,
@@ -30,6 +42,7 @@ test("toZoneSummary maps transport flags and now playing", () => {
   assert.equal(summary.capabilities.canNext, true);
   assert.equal(summary.capabilities.canPrevious, false);
   assert.equal(summary.nowPlaying?.title, "Track");
+  assert.equal(summary.outputs[0].volume?.value, -21.5);
 });
 
 test("toBrowsePage maps list metadata and items", () => {

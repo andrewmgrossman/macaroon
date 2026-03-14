@@ -13,6 +13,24 @@ struct OutputSummary: Codable, Equatable, Identifiable, Sendable {
     var outputID: String
     var zoneID: String
     var displayName: String
+    var volume: OutputVolume?
+}
+
+struct OutputVolume: Codable, Equatable, Sendable {
+    var type: String
+    var min: Double?
+    var max: Double?
+    var value: Double?
+    var step: Double?
+    var isMuted: Bool?
+
+    var supportsSlider: Bool {
+        type != "incremental" && min != nil && max != nil && value != nil
+    }
+
+    var supportsStepAdjustments: Bool {
+        type == "incremental"
+    }
 }
 
 struct TransportCapabilitySet: Codable, Equatable, Sendable {

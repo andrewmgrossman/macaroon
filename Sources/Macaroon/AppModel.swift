@@ -5,6 +5,12 @@ import SwiftUI
 @MainActor
 @Observable
 final class AppModel {
+    private struct PendingSeekState {
+        var target: Double
+        var appliedAt: Date
+        var length: Double?
+    }
+
     var connectionStatus: ConnectionStatus = .disconnected
     var currentCore: CoreSummary?
     var manualConnect = ManualConnectConfiguration(host: "127.0.0.1", port: 9100)
@@ -38,8 +44,15 @@ final class AppModel {
     private var activeBrowseLoadOffsets: Set<Int> = []
     @ObservationIgnored
     private var loadedBrowseLoadOffsets: Set<Int> = []
+    @ObservationIgnored
+    private var nowPlayingUpdatedAt: [String: Date] = [:]
+    @ObservationIgnored
+    private var volumeUpdateTask: Task<Void, Never>?
+    @ObservationIgnored
+    private var pendingSeekStates: [String: PendingSeekState] = [:]
 
     private let browsePageSize = 100
+    private let pendingSeekGraceInterval: TimeInterval = 2.0
 
     func start() {
         guard bridge == nil else {
@@ -357,11 +370,91 @@ final class AppModel {
         }
     }
 
+    func seek(to seconds: Double) {
+        guard let selectedZoneID else {
+            return
+        }
+
+        let targetSeconds = clampedSeekPosition(for: selectedZoneID, seconds: seconds)
+        applyOptimisticSeek(zoneID: selectedZoneID, seconds: targetSeconds)
+
+        Task {
+            do {
+                try await bridge?.send("transport.seek", params: TransportSeekParams(
+                    zoneOrOutputID: selectedZoneID,
+                    how: "absolute",
+                    seconds: targetSeconds
+                ))
+            } catch {
+                pendingSeekStates.removeValue(forKey: selectedZoneID)
+                errorState = ErrorState(title: "Seek Failed", message: error.localizedDescription)
+            }
+        }
+    }
+
+    func setVolume(_ value: Double, immediate: Bool = false) {
+        guard let output = selectedVolumeOutput else {
+            return
+        }
+
+        volumeUpdateTask?.cancel()
+        let sendValue = value
+        volumeUpdateTask = Task { [weak self] in
+            if immediate == false {
+                try? await Task.sleep(for: .milliseconds(120))
+            }
+            guard Task.isCancelled == false else {
+                return
+            }
+            await self?.sendVolumeChange(outputID: output.outputID, how: .absolute, value: sendValue)
+        }
+    }
+
+    func stepVolume(by delta: Double) {
+        guard let output = selectedVolumeOutput else {
+            return
+        }
+
+        volumeUpdateTask?.cancel()
+        Task {
+            await sendVolumeChange(outputID: output.outputID, how: .relative, value: delta)
+        }
+    }
+
     var selectedZone: ZoneSummary? {
         guard let selectedZoneID else {
             return nil
         }
         return zones.first(where: { $0.zoneID == selectedZoneID })
+    }
+
+    var selectedVolumeOutput: OutputSummary? {
+        selectedZone?.outputs.first(where: { $0.volume != nil })
+    }
+
+    func displayedSeekPosition(at date: Date = .now) -> Double? {
+        guard let zone = selectedZone else {
+            return nil
+        }
+
+        if let optimisticPosition = optimisticSeekPosition(for: zone, at: date) {
+            return optimisticPosition
+        }
+
+        guard
+            let nowPlaying = zone.nowPlaying,
+            let basePosition = nowPlaying.seekPosition
+        else {
+            return nil
+        }
+
+        return advancedSeekPosition(
+            basePosition: basePosition,
+            length: nowPlaying.length,
+            state: zone.state,
+            updatedAt: nowPlayingUpdatedAt[zone.zoneID] ?? date,
+            at: date
+        )
     }
 
     func loadArtwork(imageKey: String?, width: Int = 320, height: Int = 320) async -> NSImage? {
@@ -442,15 +535,22 @@ final class AppModel {
         case let .zonesChanged(payload):
             mergeZones(payload.zones)
         case let .browseListChanged(payload):
-            applyBrowsePage(payload.page)
             if
                 selectedHierarchy == .search,
-                let pendingSearchQuery,
-                let promptItem = payload.page.items.first(where: { $0.inputPrompt != nil })
+                let pendingSearchQuery
             {
-                self.pendingSearchQuery = nil
-                submitPrompt(for: promptItem, value: pendingSearchQuery)
+                if let libraryItem = searchLibraryPivotItem(in: payload.page) {
+                    openItem(libraryItem)
+                    return
+                }
+
+                if let promptItem = payload.page.items.first(where: { $0.inputPrompt != nil }) {
+                    self.pendingSearchQuery = nil
+                    submitPrompt(for: promptItem, value: pendingSearchQuery)
+                    return
+                }
             }
+            applyBrowsePage(payload.page)
         case let .browseItemReplaced(payload):
             guard browsePage?.hierarchy == payload.hierarchy else {
                 return
@@ -472,7 +572,12 @@ final class AppModel {
             guard let index = zones.firstIndex(where: { $0.zoneID == payload.zoneID }) else {
                 return
             }
-            zones[index].nowPlaying = payload.nowPlaying
+            zones[index].nowPlaying = reconciledNowPlaying(payload.nowPlaying, for: zones[index], at: .now)
+            if zones[index].nowPlaying != nil {
+                nowPlayingUpdatedAt[payload.zoneID] = .now
+            } else {
+                nowPlayingUpdatedAt.removeValue(forKey: payload.zoneID)
+            }
         case let .persistRequested(payload):
             do {
                 try sessionStore.save(payload.persistedState)
@@ -493,7 +598,16 @@ final class AppModel {
     }
 
     private func replaceZones(with incoming: [ZoneSummary]) {
-        zones = incoming.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+        let reconciledZones = incoming.map { zone in
+            reconciledZoneSummary(zone, at: .now)
+        }
+        zones = reconciledZones.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+        nowPlayingUpdatedAt = Dictionary(uniqueKeysWithValues: reconciledZones.compactMap { zone in
+            guard zone.nowPlaying != nil else {
+                return nil
+            }
+            return (zone.zoneID, Date())
+        })
         normalizeSelectedZone()
     }
 
@@ -504,7 +618,13 @@ final class AppModel {
 
         var merged = Dictionary(uniqueKeysWithValues: zones.map { ($0.zoneID, $0) })
         for zone in incoming {
-            merged[zone.zoneID] = zone
+            let reconciledZone = reconciledZoneSummary(zone, at: .now)
+            merged[zone.zoneID] = reconciledZone
+            if reconciledZone.nowPlaying != nil {
+                nowPlayingUpdatedAt[zone.zoneID] = .now
+            } else {
+                nowPlayingUpdatedAt.removeValue(forKey: zone.zoneID)
+            }
         }
 
         zones = merged.values.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
@@ -559,6 +679,135 @@ final class AppModel {
         }
 
         loadPage(offset: pageOffset, count: browsePageSize)
+    }
+
+    private func searchLibraryPivotItem(in page: BrowsePage) -> BrowseItem? {
+        guard page.hierarchy == .search else {
+            return nil
+        }
+
+        let lowercasedTitle = page.list.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard lowercasedTitle == "explore" || page.list.level == 0 else {
+            return nil
+        }
+
+        return page.items.first(where: { item in
+            item.title.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare("Library") == .orderedSame &&
+            item.itemKey != nil
+        })
+    }
+
+    private func sendVolumeChange(outputID: String, how: VolumeChangeMode, value: Double) async {
+        do {
+            try await bridge?.send("transport.changeVolume", params: TransportVolumeParams(
+                outputID: outputID,
+                how: how,
+                value: value
+            ))
+        } catch {
+            errorState = ErrorState(title: "Volume Change Failed", message: error.localizedDescription)
+        }
+    }
+
+    private func clampedSeekPosition(for zoneID: String, seconds: Double) -> Double {
+        guard
+            let zone = zones.first(where: { $0.zoneID == zoneID }),
+            let length = zone.nowPlaying?.length
+        else {
+            return max(0, seconds)
+        }
+        return min(max(0, seconds), length)
+    }
+
+    private func applyOptimisticSeek(zoneID: String, seconds: Double) {
+        let now = Date()
+        let trackLength = zones.first(where: { $0.zoneID == zoneID })?.nowPlaying?.length
+        pendingSeekStates[zoneID] = PendingSeekState(target: seconds, appliedAt: now, length: trackLength)
+        nowPlayingUpdatedAt[zoneID] = now
+
+        guard let index = zones.firstIndex(where: { $0.zoneID == zoneID }) else {
+            return
+        }
+
+        zones[index].nowPlaying?.seekPosition = seconds
+    }
+
+    private func reconciledZoneSummary(_ zone: ZoneSummary, at date: Date) -> ZoneSummary {
+        var reconciled = zone
+        reconciled.nowPlaying = reconciledNowPlaying(zone.nowPlaying, for: zone, at: date)
+        return reconciled
+    }
+
+    private func reconciledNowPlaying(_ nowPlaying: NowPlaying?, for zone: ZoneSummary, at date: Date) -> NowPlaying? {
+        guard var nowPlaying else {
+            pendingSeekStates.removeValue(forKey: zone.zoneID)
+            return nil
+        }
+
+        guard let pending = pendingSeekStates[zone.zoneID] else {
+            return nowPlaying
+        }
+
+        let optimisticPosition = advancedSeekPosition(
+            basePosition: pending.target,
+            length: pending.length ?? nowPlaying.length,
+            state: zone.state,
+            updatedAt: pending.appliedAt,
+            at: date
+        )
+
+        let pendingAge = date.timeIntervalSince(pending.appliedAt)
+        if pendingAge > pendingSeekGraceInterval {
+            pendingSeekStates.removeValue(forKey: zone.zoneID)
+            return nowPlaying
+        }
+
+        if let reportedPosition = nowPlaying.seekPosition,
+           abs(reportedPosition - optimisticPosition) <= 3 {
+            pendingSeekStates.removeValue(forKey: zone.zoneID)
+            return nowPlaying
+        }
+
+        nowPlaying.seekPosition = optimisticPosition
+        if nowPlaying.length == nil {
+            nowPlaying.length = pending.length
+        }
+        return nowPlaying
+    }
+
+    private func optimisticSeekPosition(for zone: ZoneSummary, at date: Date) -> Double? {
+        guard let pending = pendingSeekStates[zone.zoneID] else {
+            return nil
+        }
+
+        if date.timeIntervalSince(pending.appliedAt) > pendingSeekGraceInterval {
+            pendingSeekStates.removeValue(forKey: zone.zoneID)
+            return nil
+        }
+
+        return advancedSeekPosition(
+            basePosition: pending.target,
+            length: pending.length ?? zone.nowPlaying?.length,
+            state: zone.state,
+            updatedAt: pending.appliedAt,
+            at: date
+        )
+    }
+
+    private func advancedSeekPosition(
+        basePosition: Double,
+        length: Double?,
+        state: String,
+        updatedAt: Date,
+        at date: Date
+    ) -> Double {
+        let advanced = state == "playing"
+            ? basePosition + max(0, date.timeIntervalSince(updatedAt))
+            : basePosition
+        if let length {
+            return min(max(0, advanced), length)
+        }
+        return max(0, advanced)
     }
 
     private func autoConnectOnLaunchIfNeeded() {
