@@ -1,6 +1,6 @@
 # Macaroon
 
-Native macOS controller shell for a Roon Server, implemented as a SwiftUI app with a Node-based helper process.
+Native macOS controller shell for a Roon Server, implemented as a SwiftUI app with a native Swift bridge and an optional Node-based helper fallback.
 
 ## Structure
 
@@ -34,6 +34,53 @@ If you want to run the app against a local Node runtime during development, set:
 ```bash
 export ROON_HELPER_NODE="$(which node)"
 ```
+
+### Native bridge
+
+The native Swift bridge is the default runtime path.
+
+```bash
+swift run Macaroon
+```
+
+To run the native bridge against the checked-in live replay fixture:
+
+```bash
+export MACAROON_NATIVE_REPLAY_FIXTURE="/Users/andrewmg/roox/Fixtures/Replay/live-core-session-001/bridge-lines.jsonl"
+```
+
+### Node helper fallback
+
+To force the legacy Node-based bridge instead of the native bridge:
+
+```bash
+export MACAROON_USE_NODE_BRIDGE=1
+swift run Macaroon
+```
+
+### Fixture capture
+
+To capture current helper/Core traffic for replay fixtures:
+
+```bash
+export MACAROON_CAPTURE_FIXTURES=1
+```
+
+Or capture into a specific directory:
+
+```bash
+export MACAROON_CAPTURE_DIR="/path/to/fixtures"
+```
+
+Current capture outputs:
+
+- `bridge-lines.jsonl`: app-to-helper JSON line traffic
+- `helper-lines.jsonl`: helper request/response/event traffic
+
+Checked-in replay fixtures:
+
+- `Fixtures/Replay/live-core-session-001/bridge-lines.jsonl`
+- `Fixtures/Replay/live-core-session-001/helper-lines.jsonl`
 
 ## Current limitations
 

@@ -1,5 +1,14 @@
 // swift-tools-version: 6.2
 import PackageDescription
+import Foundation
+
+var macaroonSwiftSettings: [SwiftSetting] = []
+if let rawValue = ProcessInfo.processInfo.environment["MACAROON_DEBUG_LOGGING"]?
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+    .lowercased(),
+   rawValue == "1" || rawValue == "true" || rawValue == "yes" {
+    macaroonSwiftSettings.append(.define("MACAROON_DEBUG_LOGGING"))
+}
 
 let package = Package(
     name: "Macaroon",
@@ -18,12 +27,14 @@ let package = Package(
             path: "Sources/Macaroon",
             resources: [
                 .copy("Resources")
-            ]
+            ],
+            swiftSettings: macaroonSwiftSettings
         ),
         .testTarget(
             name: "MacaroonTests",
             dependencies: ["Macaroon"],
-            path: "Tests/MacaroonTests"
+            path: "Tests/MacaroonTests",
+            swiftSettings: macaroonSwiftSettings
         )
     ]
 )

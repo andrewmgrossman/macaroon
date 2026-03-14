@@ -1,25 +1,55 @@
 import readline from "node:readline";
+import fs from "node:fs/promises";
+import path from "node:path";
 import { RoonBridgeController } from "./controller.mjs";
 
 class JsonLineOutput {
   sendEvent(event, payload) {
-    process.stdout.write(`${JSON.stringify({ event, payload })}\n`);
+    const line = JSON.stringify({ event, payload });
+    captureLine("event", line);
+    process.stdout.write(`${line}\n`);
   }
 
   sendResponse(id, result = {}) {
-    process.stdout.write(`${JSON.stringify({ id, result })}\n`);
+    const line = JSON.stringify({ id, result });
+    captureLine("response", line);
+    process.stdout.write(`${line}\n`);
   }
 
   sendError(id, error) {
-    process.stdout.write(
-      `${JSON.stringify({
-        id,
-        error: {
-          code: error.code ?? "bridge.error",
-          message: error.message ?? String(error)
-        }
-      })}\n`
-    );
+    const line = JSON.stringify({
+      id,
+      error: {
+        code: error.code ?? "bridge.error",
+        message: error.message ?? String(error)
+      }
+    });
+    captureLine("error", line);
+    process.stdout.write(`${line}\n`);
+  }
+}
+
+const captureDirectory = process.env.MACAROON_HELPER_CAPTURE_DIR?.trim();
+const helperTranscriptPath = captureDirectory
+  ? path.join(captureDirectory, "helper-lines.jsonl")
+  : null;
+
+async function captureLine(kind, payload) {
+  if (!helperTranscriptPath) {
+    return;
+  }
+
+  const entry = JSON.stringify({
+    timestamp: new Date().toISOString(),
+    kind,
+    payload
+  });
+
+  try {
+    await fs.mkdir(path.dirname(helperTranscriptPath), { recursive: true });
+    await fs.appendFile(helperTranscriptPath, `${entry}\n`, "utf8");
+  } catch {
+    // Ignore capture failures.
   }
 }
 
@@ -36,6 +66,7 @@ rl.on("line", async (line) => {
   if (!line.trim()) {
     return;
   }
+  void captureLine("request", line);
 
   let message;
   try {

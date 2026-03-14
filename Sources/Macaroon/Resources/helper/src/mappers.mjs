@@ -89,12 +89,15 @@ export function toZoneSummary(zone) {
 }
 
 export function toBrowseItem(item) {
+  const lines = browseLinesForItem(item);
   return {
-    title: item.title,
-    subtitle: item.subtitle ?? null,
+    title: lines.title,
+    subtitle: lines.subtitle,
     imageKey: item.image_key ?? null,
     itemKey: item.item_key ?? null,
     hint: item.hint ?? null,
+    detail: lines.detail,
+    length: item.length ?? item.duration ?? null,
     inputPrompt: item.input_prompt
       ? {
           prompt: item.input_prompt.prompt,
@@ -115,11 +118,44 @@ export function toBrowsePage({ hierarchy, list, items, offset, selectedZoneID })
       count: list.count,
       level: list.level,
       displayOffset: list.display_offset ?? 0,
-      hint: list.hint ?? null
+      hint: list.hint ?? null,
+      imageKey: list.image_key ?? null
     },
     items: items.map(toBrowseItem),
     offset,
     selectedZoneID
+  };
+}
+
+function browseLinesForItem(item) {
+  if (item.three_line) {
+    return {
+      title: item.three_line.line1 ?? item.title ?? "Unknown",
+      subtitle: item.three_line.line2 ?? item.subtitle ?? null,
+      detail: item.three_line.line3 ?? item.detail ?? null
+    };
+  }
+
+  if (item.two_line) {
+    return {
+      title: item.two_line.line1 ?? item.title ?? "Unknown",
+      subtitle: item.two_line.line2 ?? item.subtitle ?? null,
+      detail: item.detail ?? null
+    };
+  }
+
+  if (item.one_line) {
+    return {
+      title: item.one_line.line1 ?? item.title ?? "Unknown",
+      subtitle: item.subtitle ?? null,
+      detail: item.detail ?? null
+    };
+  }
+
+  return {
+    title: item.title ?? "Unknown",
+    subtitle: item.subtitle ?? null,
+    detail: item.detail ?? null
   };
 }
 

@@ -405,7 +405,8 @@ test("browse.openService activates the selected browse service page", async () =
           count: 1,
           level: 1,
           displayOffset: 0,
-          hint: null
+          hint: null,
+          imageKey: null
         },
         items: [
           {
@@ -414,7 +415,9 @@ test("browse.openService activates the selected browse service page", async () =
             imageKey: null,
             itemKey: "favorites",
             hint: "list",
-            inputPrompt: null
+            inputPrompt: null,
+            detail: null,
+            length: null
           }
         ],
         offset: 0,

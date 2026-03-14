@@ -133,6 +133,7 @@ struct BrowseList: Codable, Equatable, Sendable {
     var level: Int
     var displayOffset: Int
     var hint: String?
+    var imageKey: String? = nil
 }
 
 struct BrowsePrompt: Codable, Equatable, Sendable {
@@ -150,6 +151,8 @@ struct BrowseItem: Codable, Equatable, Identifiable, Sendable {
     var itemKey: String?
     var hint: String?
     var inputPrompt: BrowsePrompt?
+    var detail: String? = nil
+    var length: Double? = nil
 }
 
 struct BrowsePage: Codable, Equatable, Sendable {

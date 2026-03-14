@@ -4,6 +4,17 @@ import SwiftUI
 private let browseRowHeight: CGFloat = 84
 private let browseGridArtworkSize: CGFloat = 172
 private let browseGridCardHeight: CGFloat = 286
+private let miniPlayerReservedHeight: CGFloat = 118
+
+private func formatDuration(_ seconds: Double) -> String {
+    guard seconds.isFinite else {
+        return "--:--"
+    }
+    let total = max(0, Int(seconds.rounded(.down)))
+    let minutes = total / 60
+    let secs = total % 60
+    return String(format: "%d:%02d", minutes, secs)
+}
 
 struct RootView: View {
     @Environment(AppModel.self) private var model
@@ -27,6 +38,11 @@ struct RootView: View {
                 .padding(.top, 14)
             }
         }
+        .simultaneousGesture(
+            TapGesture().onEnded {
+                clearToolbarSearchFocus()
+            }
+        )
         .toolbar {
             ToolbarItemGroup(placement: .navigation) {
                 Button {
@@ -37,20 +53,17 @@ struct RootView: View {
                 .disabled((model.browsePage?.list.level ?? 0) == 0)
 
                 Button {
-                    model.goHome()
+                    model.goForward()
                 } label: {
-                    Image(systemName: "house")
+                    Image(systemName: "chevron.forward")
                 }
-
-                Button {
-                    model.refreshBrowse()
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
+                .disabled(model.canGoForward == false)
             }
 
-            ToolbarItem(placement: .principal) {
-                ConnectionStatusPill()
+            if DebugLoggingConfiguration.isCompiled {
+                ToolbarItem(placement: .principal) {
+                    ConnectionStatusPill()
+                }
             }
 
             ToolbarItem(placement: .automatic) {
@@ -73,6 +86,11 @@ struct RootView: View {
     }
 }
 
+@MainActor
+private func clearToolbarSearchFocus() {
+    NSApp.keyWindow?.makeFirstResponder(nil)
+}
+
 private struct MainContentView: View {
     @Environment(AppModel.self) private var model
 
@@ -82,18 +100,25 @@ private struct MainContentView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             if model.isQueueSidebarVisible {
-                HStack(spacing: 0) {
-                    Divider()
-                    QueueSidebar()
-                        .frame(width: 320)
+                ZStack(alignment: .trailing) {
+                    Color.black.opacity(0.001)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            model.hideQueueSidebar()
+                        }
+
+                    HStack(spacing: 0) {
+                        Divider()
+                        QueueSidebar()
+                            .frame(width: 320)
+                    }
+                    .frame(maxHeight: .infinity)
+                    .background(.regularMaterial)
+                    .shadow(color: .black.opacity(0.08), radius: 12, y: 2)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
                 }
-                .frame(maxHeight: .infinity)
-                .background(.regularMaterial)
-                .shadow(color: .black.opacity(0.08), radius: 12, y: 2)
-                .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
-        .animation(.easeInOut(duration: 0.18), value: model.isQueueSidebarVisible)
     }
 }
 
@@ -173,50 +198,56 @@ private struct BrowserView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            BrowserHeader()
-
-            if model.selectedHierarchy != .search,
-               let promptItem = model.browsePromptItem {
-                SearchPromptRow(
-                    item: promptItem,
-                    text: $promptText
-                ) {
-                    model.submitPrompt(for: promptItem, value: promptText)
-                }
-                .padding(.horizontal, 28)
-                .padding(.bottom, 18)
-            }
-
             if let page = model.browsePage {
-                ScrollView {
-                    if usesDenseGrid(for: page) {
-                        LazyVGrid(
-                            columns: [GridItem(.adaptive(minimum: 170, maximum: 210), spacing: 18)],
-                            spacing: 18
+                if let albumContext = albumDetailContext(for: page) {
+                    AlbumDetailView(context: albumContext)
+                } else if let artistContext = artistDetailContext(for: page) {
+                    ArtistDetailView(context: artistContext)
+                } else {
+                    BrowserHeader()
+
+                    if model.selectedHierarchy != .search,
+                       let promptItem = model.browsePromptItem {
+                        SearchPromptRow(
+                            item: promptItem,
+                            text: $promptText
                         ) {
-                            ForEach(0..<page.list.count, id: \.self) { index in
-                                BrowseGridSlot(index: index)
-                                    .onAppear {
-                                        model.ensureBrowseItemsLoaded(for: index)
-                                    }
-                            }
+                            model.submitPrompt(for: promptItem, value: promptText)
                         }
-                        .padding(.horizontal, 22)
-                        .padding(.bottom, 28)
-                    } else {
-                        LazyVStack(spacing: 1) {
-                            ForEach(0..<page.list.count, id: \.self) { index in
-                                BrowseRowSlot(index: index)
-                                .onAppear {
-                                    model.ensureBrowseItemsLoaded(for: index)
+                        .padding(.horizontal, 28)
+                        .padding(.bottom, 18)
+                    }
+
+                    ScrollView {
+                        if usesDenseGrid(for: page) {
+                            LazyVGrid(
+                                columns: [GridItem(.adaptive(minimum: 170, maximum: 210), spacing: 18)],
+                                spacing: 18
+                            ) {
+                                ForEach(0..<page.list.count, id: \.self) { index in
+                                    BrowseGridSlot(index: index)
+                                        .onAppear {
+                                            model.ensureBrowseItemsLoaded(for: index)
+                                        }
                                 }
                             }
+                            .padding(.horizontal, 22)
+                            .padding(.bottom, 28)
+                        } else {
+                            LazyVStack(spacing: 1) {
+                                ForEach(0..<page.list.count, id: \.self) { index in
+                                    BrowseRowSlot(index: index)
+                                        .onAppear {
+                                            model.ensureBrowseItemsLoaded(for: index)
+                                        }
+                                }
+                            }
+                            .padding(.horizontal, 18)
+                            .padding(.bottom, 28)
                         }
-                        .padding(.horizontal, 18)
-                        .padding(.bottom, 28)
                     }
+                    .background(Color(nsColor: .windowBackgroundColor))
                 }
-                .background(Color(nsColor: .windowBackgroundColor))
             } else {
                 ContentUnavailableView(
                     "No Library Content",
@@ -232,8 +263,46 @@ private struct BrowserView: View {
 
     private func usesDenseGrid(for page: BrowsePage) -> Bool {
         let title = page.list.title.lowercased()
-        return title == "albums" || title == "artists"
+        return title == "albums" || title == "artists" || title == "composers" || title == "genres" || title == "playlists"
     }
+
+    private func albumDetailContext(for page: BrowsePage) -> AlbumDetailContext? {
+        guard let playItem = page.items.first,
+              playItem.title == "Play Album",
+              playItem.itemKey != nil
+        else {
+            return nil
+        }
+
+        return AlbumDetailContext(
+            page: page,
+            playItem: playItem
+        )
+    }
+
+    private func artistDetailContext(for page: BrowsePage) -> ArtistDetailContext? {
+        guard let playItem = page.items.first,
+              playItem.title == "Play Artist",
+              playItem.itemKey != nil
+        else {
+            return nil
+        }
+
+        return ArtistDetailContext(
+            page: page,
+            playItem: playItem
+        )
+    }
+}
+
+private struct AlbumDetailContext {
+    var page: BrowsePage
+    var playItem: BrowseItem
+}
+
+private struct ArtistDetailContext {
+    var page: BrowsePage
+    var playItem: BrowseItem
 }
 
 private struct BrowseRowSlot: View {
@@ -242,9 +311,13 @@ private struct BrowseRowSlot: View {
 
     var body: some View {
         if let item = model.browseItem(at: index) {
-            BrowserRow(item: item) {
-                if item.inputPrompt == nil {
-                    model.openItem(item)
+            if model.selectedHierarchy == .internetRadio {
+                InternetRadioRow(item: item)
+            } else {
+                BrowserRow(item: item) {
+                    if item.inputPrompt == nil {
+                        model.openItem(item)
+                    }
                 }
             }
         } else {
@@ -266,8 +339,375 @@ private struct BrowseGridSlot: View {
     }
 }
 
+private struct AlbumDetailView: View {
+    @Environment(AppModel.self) private var model
+    let context: AlbumDetailContext
+
+    private let topAnchorID = "album-detail-top"
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    Color.clear
+                        .frame(height: 1)
+                        .id(topAnchorID)
+
+                    HStack(alignment: .top, spacing: 28) {
+                        ArtworkView(
+                            imageKey: context.page.list.imageKey,
+                            title: context.page.list.title,
+                            size: CGSize(width: 220, height: 220)
+                        )
+
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text(context.page.list.title)
+                                .font(.system(size: 34, weight: .semibold))
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            if let artistName = context.page.list.subtitle,
+                               artistName.isEmpty == false {
+                                Button {
+                                    model.openArtist(named: artistName)
+                                } label: {
+                                    Text(artistName)
+                                        .font(.system(size: 21, weight: .medium))
+                                        .foregroundStyle(.secondary)
+                                }
+                                .buttonStyle(.plain)
+                            }
+
+                            DetailHeaderPlaybackControls(item: context.playItem)
+
+                            if trackCount > 0 {
+                                Text("\(trackCount) tracks")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            Spacer(minLength: 0)
+                        }
+
+                        Spacer(minLength: 0)
+                    }
+
+                    VStack(spacing: 0) {
+                        ForEach(1..<context.page.list.count, id: \.self) { index in
+                            if let track = model.browseItem(at: index) {
+                                AlbumTrackRow(item: track) {
+                                    model.performPreferredAction(for: track, preferredActionTitles: ["Play Now"])
+                                }
+                                .onAppear {
+                                    model.ensureBrowseItemsLoaded(for: index)
+                                }
+                            } else {
+                                AlbumTrackRowPlaceholder()
+                                    .onAppear {
+                                        model.ensureBrowseItemsLoaded(for: index)
+                                    }
+                            }
+
+                            if index < context.page.list.count - 1 {
+                                Divider()
+                                    .padding(.leading, 58)
+                            }
+                        }
+                    }
+                    .background(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(Color(nsColor: .controlBackgroundColor))
+                    )
+                }
+                .padding(.horizontal, 28)
+                .padding(.top, 26)
+                .padding(.bottom, miniPlayerReservedHeight)
+            }
+            .background(Color(nsColor: .windowBackgroundColor))
+            .onAppear {
+                proxy.scrollTo(topAnchorID, anchor: .top)
+            }
+            .onChange(of: scrollIdentity) { _, _ in
+                proxy.scrollTo(topAnchorID, anchor: .top)
+            }
+        }
+    }
+
+    private var scrollIdentity: String {
+        [
+            context.page.hierarchy.rawValue,
+            context.page.list.title,
+            context.page.list.subtitle ?? "",
+            String(context.page.list.level)
+        ].joined(separator: "|")
+    }
+
+    private var trackCount: Int {
+        max(context.page.list.count - 1, 0)
+    }
+}
+
+private struct ArtistDetailView: View {
+    @Environment(AppModel.self) private var model
+    let context: ArtistDetailContext
+
+    private let topAnchorID = "artist-detail-top"
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    Color.clear
+                        .frame(height: 1)
+                        .id(topAnchorID)
+
+                    HStack(alignment: .top, spacing: 28) {
+                        ArtworkView(
+                            imageKey: context.page.list.imageKey,
+                            title: context.page.list.title,
+                            size: CGSize(width: 220, height: 220)
+                        )
+
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text(context.page.list.title)
+                                .font(.system(size: 34, weight: .semibold))
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            if let subtitle = context.page.list.subtitle,
+                               subtitle.isEmpty == false {
+                                Text(subtitle)
+                                    .font(.system(size: 16))
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            DetailHeaderPlaybackControls(item: context.playItem)
+
+                            if albumCount > 0 {
+                                Text(albumCount == 1 ? "1 album" : "\(albumCount) albums")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            Spacer(minLength: 0)
+                        }
+
+                        Spacer(minLength: 0)
+                    }
+
+                    if albumCount > 0 {
+                        VStack(alignment: .leading, spacing: 14) {
+                            Text("Albums")
+                                .font(.system(size: 18, weight: .semibold))
+
+                            LazyVGrid(
+                                columns: [GridItem(.adaptive(minimum: 170, maximum: 210), spacing: 18)],
+                                spacing: 18
+                            ) {
+                                ForEach(1..<context.page.list.count, id: \.self) { index in
+                                    if let item = model.browseItem(at: index) {
+                                        BrowserGridCard(item: item)
+                                            .onAppear {
+                                                model.ensureBrowseItemsLoaded(for: index)
+                                            }
+                                    } else {
+                                        BrowserGridCardPlaceholder()
+                                            .onAppear {
+                                                model.ensureBrowseItemsLoaded(for: index)
+                                            }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal, 28)
+                .padding(.top, 26)
+                .padding(.bottom, miniPlayerReservedHeight)
+            }
+            .background(Color(nsColor: .windowBackgroundColor))
+            .onAppear {
+                proxy.scrollTo(topAnchorID, anchor: .top)
+            }
+            .onChange(of: scrollIdentity) { _, _ in
+                proxy.scrollTo(topAnchorID, anchor: .top)
+            }
+        }
+    }
+
+    private var scrollIdentity: String {
+        [
+            context.page.hierarchy.rawValue,
+            context.page.list.title,
+            context.page.list.subtitle ?? "",
+            String(context.page.list.level)
+        ].joined(separator: "|")
+    }
+
+    private var albumCount: Int {
+        max(context.page.list.count - 1, 0)
+    }
+}
+
+private struct DetailHeaderPlaybackControls: View {
+    @Environment(AppModel.self) private var model
+    let item: BrowseItem
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Button {
+                model.performPreferredAction(for: item, preferredActionTitles: ["Play Now"])
+            } label: {
+                Image(systemName: "play.fill")
+                    .font(.system(size: 20, weight: .bold))
+                    .frame(width: 44, height: 44)
+                    .background(
+                        Circle()
+                            .fill(Color.accentColor.opacity(0.14))
+                    )
+            }
+            .buttonStyle(.plain)
+            .disabled(item.itemKey == nil)
+
+            Menu {
+                Button("Play Now") {
+                    model.performPreferredAction(for: item, preferredActionTitles: ["Play Now"])
+                }
+                Button("Add Next") {
+                    model.performPreferredAction(for: item, preferredActionTitles: ["Add Next"])
+                }
+                Button("Queue") {
+                    model.performPreferredAction(for: item, preferredActionTitles: ["Queue"])
+                }
+                Button("Start Radio") {
+                    model.performPreferredAction(for: item, preferredActionTitles: ["Start Radio"])
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 16, weight: .bold))
+                    .frame(width: 34, height: 34)
+            }
+            .menuStyle(.borderlessButton)
+            .disabled(item.itemKey == nil)
+        }
+    }
+}
+
+private struct AlbumTrackRow: View {
+    @Environment(AppModel.self) private var model
+    let item: BrowseItem
+    let action: () -> Void
+
+    var body: some View {
+        HStack(spacing: 14) {
+            HStack(spacing: 4) {
+                Button {
+                    action()
+                } label: {
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 10, weight: .bold))
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain)
+                .disabled(item.itemKey == nil)
+
+                Menu {
+                    Button("Play Now", action: action)
+                    Button("Add Next") {
+                        model.performPreferredAction(for: item, preferredActionTitles: ["Add Next"])
+                    }
+                    Button("Queue") {
+                        model.performPreferredAction(for: item, preferredActionTitles: ["Queue"])
+                    }
+                    Button("Start Radio") {
+                        model.performPreferredAction(for: item, preferredActionTitles: ["Start Radio"])
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 10, weight: .bold))
+                        .frame(width: 24, height: 24)
+                }
+                .menuStyle(.borderlessButton)
+                .disabled(item.itemKey == nil)
+            }
+            .frame(width: 48, alignment: .leading)
+
+            Button(action: action) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(item.title)
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(.primary)
+                            .multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+
+                        if let subtitle = item.subtitle, subtitle.isEmpty == false {
+                            Text(subtitle)
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.leading)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+
+                    Spacer(minLength: 8)
+
+                    if let length = item.length {
+                        Text(formatDuration(length))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .contextMenu {
+            Button("Play Now", action: action)
+            Button("Add Next") {
+                model.performPreferredAction(for: item, preferredActionTitles: ["Add Next"])
+            }
+            Button("Queue") {
+                model.performPreferredAction(for: item, preferredActionTitles: ["Queue"])
+            }
+            Button("Start Radio") {
+                model.performPreferredAction(for: item, preferredActionTitles: ["Start Radio"])
+            }
+        }
+    }
+}
+
+private struct AlbumTrackRowPlaceholder: View {
+    var body: some View {
+        HStack(spacing: 14) {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color(nsColor: .tertiarySystemFill))
+                .frame(width: 48, height: 24)
+
+            VStack(alignment: .leading, spacing: 8) {
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(Color(nsColor: .tertiarySystemFill))
+                    .frame(height: 14)
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(Color(nsColor: .quaternarySystemFill))
+                    .frame(width: 180, height: 12)
+            }
+
+            Spacer(minLength: 8)
+
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .fill(Color(nsColor: .quaternarySystemFill))
+                .frame(width: 36, height: 12)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .redacted(reason: .placeholder)
+    }
+}
+
 private struct SearchToolbarField: View {
     @Environment(AppModel.self) private var model
+    @FocusState private var isFocused: Bool
 
     var body: some View {
         @Bindable var model = model
@@ -278,6 +718,7 @@ private struct SearchToolbarField: View {
             TextField("Search Library", text: $model.searchText)
                 .textFieldStyle(.plain)
                 .frame(width: 220)
+                .focused($isFocused)
                 .onSubmit {
                     model.runSearch()
                 }
@@ -308,7 +749,7 @@ private struct BrowserHeader: View {
     var body: some View {
         HStack(alignment: .bottom) {
             VStack(alignment: .leading, spacing: 6) {
-                Text(model.browsePage?.list.title ?? model.selectedHierarchy.title)
+                Text(headerTitle)
                     .font(.system(size: 30, weight: .semibold, design: .default))
                 if let subtitle = model.browsePage?.list.subtitle, subtitle.isEmpty == false {
                     Text(subtitle)
@@ -326,6 +767,13 @@ private struct BrowserHeader: View {
         .padding(.horizontal, 28)
         .padding(.top, 26)
         .padding(.bottom, 18)
+    }
+
+    private var headerTitle: String {
+        if model.selectedHierarchy == .internetRadio {
+            return BrowseHierarchy.internetRadio.title
+        }
+        return model.browsePage?.list.title ?? model.selectedHierarchy.title
     }
 }
 
@@ -553,7 +1001,7 @@ private struct MiniPlayerTransportSection: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 2) {
             MiniPlayerProgressSection()
 
             HStack(spacing: 14) {
@@ -583,7 +1031,7 @@ private struct MiniPlayerProgressSection: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
-            VStack(spacing: 4) {
+            VStack(spacing: 2) {
                 Slider(
                     value: Binding(
                         get: {
@@ -937,6 +1385,72 @@ private struct BrowserGridCard: View {
                 .fill(Color(nsColor: .controlBackgroundColor))
         )
         .frame(height: browseGridCardHeight)
+    }
+}
+
+private struct InternetRadioRow: View {
+    @Environment(AppModel.self) private var model
+    let item: BrowseItem
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Button {
+                model.performPreferredAction(for: item, preferredActionTitles: ["Play Now"])
+            } label: {
+                Image(systemName: "play.fill")
+                    .font(.system(size: 10, weight: .bold))
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(item.itemKey == nil ? Color.secondary : Color.primary)
+            .disabled(item.itemKey == nil)
+
+            Button {
+                if item.inputPrompt == nil {
+                    model.openItem(item)
+                }
+            } label: {
+                HStack(spacing: 14) {
+                    ArtworkView(
+                        imageKey: item.imageKey,
+                        title: item.title,
+                        size: CGSize(width: 48, height: 48)
+                    )
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(item.title)
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(.primary)
+                        if let subtitle = item.subtitle, subtitle.isEmpty == false {
+                            Text(subtitle)
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+
+                    Spacer(minLength: 0)
+                }
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+        .frame(height: browseRowHeight)
+        .contextMenu {
+            if item.itemKey != nil {
+                Button("Open") {
+                    model.openItem(item)
+                }
+            }
+            Button("Play Now") {
+                model.performPreferredAction(for: item, preferredActionTitles: ["Play Now"])
+            }
+        }
     }
 }
 
