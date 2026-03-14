@@ -43,12 +43,6 @@ The native Swift bridge is the default runtime path.
 swift run Macaroon
 ```
 
-To run the native bridge against the checked-in live replay fixture:
-
-```bash
-export MACAROON_NATIVE_REPLAY_FIXTURE="/Users/andrewmg/roox/Fixtures/Replay/live-core-session-001/bridge-lines.jsonl"
-```
-
 ### Node helper fallback
 
 To force the legacy Node-based bridge instead of the native bridge:
@@ -85,5 +79,4 @@ Checked-in replay fixtures:
 ## Current limitations
 
 - The helper dependencies are not vendored; `npm install` is required before real Roon connectivity works.
-- Artwork fetching is implemented on the helper side, but the SwiftUI layer currently renders placeholders instead of loading fetched image files.
 - Packaging a private Node runtime inside a notarized `.app` bundle is not yet automated in this repo.
