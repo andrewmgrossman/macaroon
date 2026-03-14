@@ -25,6 +25,7 @@ class JsonLineOutput {
 
 const output = new JsonLineOutput();
 const controller = new RoonBridgeController(output);
+let isShuttingDown = false;
 
 const rl = readline.createInterface({
   input: process.stdin,
@@ -67,4 +68,32 @@ process.on("unhandledRejection", (reason) => {
     code: "bridge.unhandled_rejection",
     message: reason instanceof Error ? reason.message : String(reason)
   });
+});
+
+async function shutdown(exitCode = 0) {
+  if (isShuttingDown) {
+    return;
+  }
+  isShuttingDown = true;
+  try {
+    controller.shutdown();
+  } finally {
+    rl.close();
+    process.exit(exitCode);
+  }
+}
+
+rl.on("close", () => {
+  if (isShuttingDown) {
+    return;
+  }
+  void shutdown(0);
+});
+
+process.on("SIGTERM", () => {
+  void shutdown(0);
+});
+
+process.on("SIGINT", () => {
+  void shutdown(0);
 });

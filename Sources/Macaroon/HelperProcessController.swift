@@ -23,6 +23,8 @@ enum BridgeEventEnvelope: Equatable, Sendable {
     case authorizationRequired(AuthorizationRequiredEvent)
     case zonesSnapshot(ZonesSnapshotEvent)
     case zonesChanged(ZonesChangedEvent)
+    case queueSnapshot(QueueSnapshotEvent)
+    case queueChanged(QueueChangedEvent)
     case browseListChanged(BrowseListChangedEvent)
     case browseItemReplaced(BrowseItemReplacedEvent)
     case browseItemRemoved(BrowseItemRemovedEvent)
@@ -90,8 +92,17 @@ final class HelperProcessController: NSObject, BridgeService {
     }
 
     func stop() async {
+        terminateSynchronously()
+    }
+
+    func terminateSynchronously() {
         stdoutPipe?.fileHandleForReading.readabilityHandler = nil
-        process?.terminate()
+
+        if let process, process.isRunning {
+            process.terminate()
+            process.waitUntilExit()
+        }
+
         handleProcessTermination()
     }
 
@@ -201,6 +212,10 @@ final class HelperProcessController: NSObject, BridgeService {
             return .event(.zonesSnapshot(try decoder.decode(BridgeEvent<ZonesSnapshotEvent>.self, from: data).payload))
         case "zones.changed":
             return .event(.zonesChanged(try decoder.decode(BridgeEvent<ZonesChangedEvent>.self, from: data).payload))
+        case "queue.snapshot":
+            return .event(.queueSnapshot(try decoder.decode(BridgeEvent<QueueSnapshotEvent>.self, from: data).payload))
+        case "queue.changed":
+            return .event(.queueChanged(try decoder.decode(BridgeEvent<QueueChangedEvent>.self, from: data).payload))
         case "browse.listChanged":
             return .event(.browseListChanged(try decoder.decode(BridgeEvent<BrowseListChangedEvent>.self, from: data).payload))
         case "browse.itemReplaced":
@@ -375,6 +390,17 @@ final class MockBridgeService: BridgeService {
                 eventHandler?(.event(.connectionChanged(ConnectionChangedEvent(status: .connecting(mode: "mock")))))
                 eventHandler?(.event(.connectionChanged(ConnectionChangedEvent(status: .connected(core)))))
                 eventHandler?(.event(.zonesSnapshot(ZonesSnapshotEvent(zones: zones))))
+                eventHandler?(.event(.queueSnapshot(QueueSnapshotEvent(queue: QueueState(
+                    zoneID: "zone-1",
+                    title: "Up Next",
+                    totalCount: 3,
+                    currentQueueItemID: "queue-1",
+                    items: [
+                        QueueItemSummary(queueItemID: "queue-1", title: "So What", subtitle: "Miles Davis", detail: "Kind of Blue", imageKey: nil, length: 544, isCurrent: true),
+                        QueueItemSummary(queueItemID: "queue-2", title: "Freddie Freeloader", subtitle: "Miles Davis", detail: "Kind of Blue", imageKey: nil, length: 589, isCurrent: false),
+                        QueueItemSummary(queueItemID: "queue-3", title: "Blue in Green", subtitle: "Miles Davis", detail: "Kind of Blue", imageKey: nil, length: 327, isCurrent: false)
+                    ]
+                )))))
                 eventHandler?(.event(.browseListChanged(BrowseListChangedEvent(page: page))))
             }
             if let typed = EmptyResult() as? Result {
@@ -387,6 +413,47 @@ final class MockBridgeService: BridgeService {
                 items: [
                     BrowseItem(title: "Kind of Blue", subtitle: "Miles Davis", imageKey: nil, itemKey: "album-kind-of-blue", hint: "action", inputPrompt: nil),
                     BrowseItem(title: "Blue Train", subtitle: "John Coltrane", imageKey: nil, itemKey: "album-blue-train", hint: "action", inputPrompt: nil)
+                ],
+                offset: 0,
+                selectedZoneID: "zone-1"
+            )
+            await MainActor.run {
+                eventHandler?(.event(.browseListChanged(BrowseListChangedEvent(page: page))))
+            }
+            if let typed = EmptyResult() as? Result {
+                return typed
+            }
+        case "browse.services":
+            let result = BrowseServicesResult(services: [
+                BrowseServiceSummary(title: "Qobuz"),
+                BrowseServiceSummary(title: "TIDAL")
+            ])
+            if let typed = result as? Result {
+                return typed
+            }
+        case "browse.openService":
+            let page = BrowsePage(
+                hierarchy: .browse,
+                list: BrowseList(title: "TIDAL", subtitle: "Mock service", count: 2, level: 1, displayOffset: 0, hint: nil),
+                items: [
+                    BrowseItem(title: "New Arrivals", subtitle: nil, imageKey: nil, itemKey: "tidal-new", hint: "list", inputPrompt: nil),
+                    BrowseItem(title: "Favorites", subtitle: nil, imageKey: nil, itemKey: "tidal-favorites", hint: "list", inputPrompt: nil)
+                ],
+                offset: 0,
+                selectedZoneID: "zone-1"
+            )
+            await MainActor.run {
+                eventHandler?(.event(.browseListChanged(BrowseListChangedEvent(page: page))))
+            }
+            if let typed = EmptyResult() as? Result {
+                return typed
+            }
+        case "browse.openSearchMatch":
+            let page = BrowsePage(
+                hierarchy: .search,
+                list: BrowseList(title: "Artist", subtitle: "Mock artist page", count: 1, level: 2, displayOffset: 0, hint: nil),
+                items: [
+                    BrowseItem(title: "Albums", subtitle: "4 albums", imageKey: nil, itemKey: "artist-albums", hint: "list", inputPrompt: nil)
                 ],
                 offset: 0,
                 selectedZoneID: "zone-1"
@@ -418,7 +485,11 @@ final class MockBridgeService: BridgeService {
             if let typed = EmptyResult() as? Result {
                 return typed
             }
-        case "transport.seek", "transport.changeVolume":
+        case "queue.playFromHere":
+            if let typed = EmptyResult() as? Result {
+                return typed
+            }
+        case "transport.seek", "transport.changeVolume", "transport.mute":
             if let typed = EmptyResult() as? Result {
                 return typed
             }

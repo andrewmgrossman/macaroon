@@ -111,15 +111,19 @@ enum BrowseHierarchy: String, CaseIterable, Codable, Identifiable, Sendable {
 }
 
 extension BrowseHierarchy {
-    static let sidebarCases: [BrowseHierarchy] = [
-        .browse,
-        .playlists,
+    static let libraryCases: [BrowseHierarchy] = [
         .albums,
         .artists,
-        .genres,
         .composers,
-        .internetRadio
+        .genres,
+        .internetRadio,
+        .playlists
     ]
+}
+
+struct BrowseServiceSummary: Codable, Equatable, Identifiable, Sendable {
+    var id: String { title }
+    var title: String
 }
 
 struct BrowseList: Codable, Equatable, Sendable {
@@ -154,6 +158,25 @@ struct BrowsePage: Codable, Equatable, Sendable {
     var items: [BrowseItem]
     var offset: Int
     var selectedZoneID: String?
+}
+
+struct QueueItemSummary: Codable, Equatable, Identifiable, Sendable {
+    var id: String { queueItemID }
+    var queueItemID: String
+    var title: String
+    var subtitle: String?
+    var detail: String?
+    var imageKey: String?
+    var length: Double?
+    var isCurrent: Bool
+}
+
+struct QueueState: Codable, Equatable, Sendable {
+    var zoneID: String
+    var title: String?
+    var totalCount: Int
+    var currentQueueItemID: String?
+    var items: [QueueItemSummary]
 }
 
 struct ManualConnectConfiguration: Codable, Equatable, Sendable {

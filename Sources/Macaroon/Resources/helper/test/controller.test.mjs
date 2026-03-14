@@ -294,6 +294,629 @@ test("transport.changeVolume forwards output volume requests", async () => {
   });
 });
 
+test("browse.services returns subscribed services in alphabetical order", async () => {
+  const output = new TestOutput();
+  const controller = new RoonBridgeController(output);
+
+  controller.core = {
+    services: {
+      RoonApiBrowse: {
+        browse(options, callback) {
+          callback(null, {
+            action: "list",
+            list: { title: "Explore", count: 4, level: 0, display_offset: 0 }
+          });
+        },
+        load(options, callback) {
+          callback(null, {
+            list: { title: "Explore", count: 4, level: 0, display_offset: 0 },
+            items: [
+              { title: "Library", item_key: "library" },
+              { title: "TIDAL", item_key: "tidal" },
+              { title: "Settings", item_key: "settings" },
+              { title: "Qobuz", item_key: "qobuz" }
+            ],
+            offset: 0
+          });
+        }
+      }
+    }
+  };
+
+  const result = await controller.handle({
+    method: "browse.services",
+    params: {}
+  });
+
+  assert.deepEqual(result, {
+    services: [
+      { title: "Qobuz" },
+      { title: "TIDAL" }
+    ]
+  });
+});
+
+test("browse.openService activates the selected browse service page", async () => {
+  const output = new TestOutput();
+  const controller = new RoonBridgeController(output);
+  let loadStep = 0;
+
+  controller.core = {
+    services: {
+      RoonApiBrowse: {
+        browse(options, callback) {
+          if (options.pop_all) {
+            callback(null, {
+              action: "list",
+              list: { title: "Explore", count: 3, level: 0, display_offset: 0 }
+            });
+            return;
+          }
+
+          callback(null, {
+            action: "list",
+            list: { title: "TIDAL", count: 1, level: 1, display_offset: 0 }
+          });
+        },
+        load(options, callback) {
+          loadStep += 1;
+
+          if (loadStep === 1) {
+            callback(null, {
+              list: { title: "Explore", count: 3, level: 0, display_offset: 0 },
+              items: [
+                { title: "Library", item_key: "library" },
+                { title: "Qobuz", item_key: "qobuz" },
+                { title: "TIDAL", item_key: "tidal" }
+              ],
+              offset: 0
+            });
+            return;
+          }
+
+          callback(null, {
+            list: { title: "TIDAL", count: 1, level: 1, display_offset: 0 },
+            items: [
+              { title: "Favorites", item_key: "favorites", hint: "list" }
+            ],
+            offset: 0
+          });
+        }
+      }
+    }
+  };
+
+  await controller.handle({
+    method: "browse.openService",
+    params: {
+      title: "TIDAL",
+      zoneOrOutputID: "zone-1"
+    }
+  });
+
+  assert.deepEqual(output.events.at(-1), {
+    event: "browse.listChanged",
+    payload: {
+      page: {
+        hierarchy: "browse",
+        list: {
+          title: "TIDAL",
+          subtitle: null,
+          count: 1,
+          level: 1,
+          displayOffset: 0,
+          hint: null
+        },
+        items: [
+          {
+            title: "Favorites",
+            subtitle: null,
+            imageKey: null,
+            itemKey: "favorites",
+            hint: "list",
+            inputPrompt: null
+          }
+        ],
+        offset: 0,
+        selectedZoneID: "zone-1"
+      }
+    }
+  });
+});
+
+test("browse.openSearchMatch drills into the requested category result", async () => {
+  const output = new TestOutput();
+  const controller = new RoonBridgeController(output);
+
+  let browseStep = 0;
+  let loadStep = 0;
+
+  controller.core = {
+    services: {
+      RoonApiBrowse: {
+        browse(options, callback) {
+          browseStep += 1;
+
+          if (browseStep === 1) {
+            callback(null, {
+              action: "list",
+              list: { title: "Explore", count: 1, level: 0, display_offset: 0 }
+            });
+            return;
+          }
+          if (browseStep === 2) {
+            callback(null, {
+              action: "list",
+              list: { title: "Library", count: 1, level: 1, display_offset: 0 }
+            });
+            return;
+          }
+          if (browseStep === 3) {
+            callback(null, { action: "none" });
+            return;
+          }
+          if (browseStep === 4) {
+            callback(null, {
+              action: "list",
+              list: { title: "Artists", count: 1, level: 2, display_offset: 0 }
+            });
+            return;
+          }
+
+          callback(null, {
+            action: "list",
+            list: { title: "Nirvana", count: 1, level: 3, display_offset: 0 }
+          });
+        },
+        load(options, callback) {
+          loadStep += 1;
+
+          if (loadStep === 1) {
+            callback(null, {
+              list: { title: "Explore", count: 1, level: 0, display_offset: 0 },
+              items: [
+                { title: "Library", item_key: "library" }
+              ],
+              offset: 0
+            });
+            return;
+          }
+          if (loadStep === 2) {
+            callback(null, {
+              list: { title: "Library", count: 1, level: 1, display_offset: 0 },
+              items: [
+                {
+                  title: "Search",
+                  item_key: "search-prompt",
+                  input_prompt: { prompt: "Search", action: "Go", value: null, is_password: false }
+                }
+              ],
+              offset: 0
+            });
+            return;
+          }
+          if (loadStep === 3) {
+            callback(null, {
+              list: { title: "Search", count: 2, level: 1, display_offset: 0 },
+              items: [
+                { title: "Artists", item_key: "artists" },
+                { title: "Albums", item_key: "albums" }
+              ],
+              offset: 0
+            });
+            return;
+          }
+          if (loadStep === 4) {
+            callback(null, {
+              list: { title: "Artists", count: 1, level: 2, display_offset: 0 },
+              items: [
+                { title: "Nirvana", item_key: "nirvana" }
+              ],
+              offset: 0
+            });
+            return;
+          }
+
+          callback(null, {
+            list: { title: "Nirvana", count: 1, level: 3, display_offset: 0 },
+            items: [
+              { title: "Albums", item_key: "albums-for-artist", hint: "list" }
+            ],
+            offset: 0
+          });
+        }
+      }
+    }
+  };
+
+  await controller.handle({
+    method: "browse.openSearchMatch",
+    params: {
+      query: "nirvana",
+      categoryTitle: "Artists",
+      matchTitle: "Nirvana",
+      zoneOrOutputID: "zone-1"
+    }
+  });
+
+  assert.equal(output.events.at(-1)?.event, "browse.listChanged");
+  assert.equal(output.events.at(-1)?.payload.page.hierarchy, "search");
+  assert.equal(output.events.at(-1)?.payload.page.list.title, "Nirvana");
+});
+
+test("browse.openSearchMatch drills through a single matching album row", async () => {
+  const output = new TestOutput();
+  const controller = new RoonBridgeController(output);
+
+  let browseStep = 0;
+  let loadStep = 0;
+
+  controller.core = {
+    services: {
+      RoonApiBrowse: {
+        browse(options, callback) {
+          browseStep += 1;
+
+          if (browseStep === 1) {
+            callback(null, {
+              action: "list",
+              list: { title: "Explore", count: 1, level: 0, display_offset: 0 }
+            });
+            return;
+          }
+          if (browseStep === 2) {
+            callback(null, {
+              action: "list",
+              list: { title: "Library", count: 1, level: 1, display_offset: 0 }
+            });
+            return;
+          }
+          if (browseStep === 3) {
+            callback(null, { action: "none" });
+            return;
+          }
+          if (browseStep === 4) {
+            callback(null, {
+              action: "list",
+              list: { title: "Albums", count: 1, level: 2, display_offset: 0 }
+            });
+            return;
+          }
+          if (browseStep === 5) {
+            callback(null, {
+              action: "list",
+              list: { title: "Albums", count: 1, level: 3, display_offset: 0 }
+            });
+            return;
+          }
+
+          callback(null, {
+            action: "list",
+            list: { title: "In Utero", count: 12, level: 4, display_offset: 0 }
+          });
+        },
+        load(options, callback) {
+          loadStep += 1;
+
+          if (loadStep === 1) {
+            callback(null, {
+              list: { title: "Explore", count: 1, level: 0, display_offset: 0 },
+              items: [
+                { title: "Library", item_key: "library" }
+              ],
+              offset: 0
+            });
+            return;
+          }
+          if (loadStep === 2) {
+            callback(null, {
+              list: { title: "Library", count: 1, level: 1, display_offset: 0 },
+              items: [
+                {
+                  title: "Search",
+                  item_key: "search-prompt",
+                  input_prompt: { prompt: "Search", action: "Go", value: null, is_password: false }
+                }
+              ],
+              offset: 0
+            });
+            return;
+          }
+          if (loadStep === 3) {
+            callback(null, {
+              list: { title: "Search", count: 2, level: 1, display_offset: 0 },
+              items: [
+                { title: "Artists", item_key: "artists" },
+                { title: "Albums", item_key: "albums" }
+              ],
+              offset: 0
+            });
+            return;
+          }
+          if (loadStep === 4) {
+            callback(null, {
+              list: { title: "Albums", count: 1, level: 2, display_offset: 0 },
+              items: [
+                { title: "In Utero", item_key: "in-utero" }
+              ],
+              offset: 0
+            });
+            return;
+          }
+          if (loadStep === 5) {
+            callback(null, {
+              list: { title: "Albums", count: 1, level: 3, display_offset: 0 },
+              items: [
+                { title: "In Utero", item_key: "album-detail" }
+              ],
+              offset: 0
+            });
+            return;
+          }
+
+          callback(null, {
+            list: { title: "In Utero", count: 12, level: 4, display_offset: 0 },
+            items: [
+              { title: "Serve the Servants", item_key: "track-1", hint: "action" }
+            ],
+            offset: 0
+          });
+        }
+      }
+    }
+  };
+
+  await controller.handle({
+    method: "browse.openSearchMatch",
+    params: {
+      query: "In Utero",
+      categoryTitle: "Albums",
+      matchTitle: "In Utero",
+      zoneOrOutputID: "zone-1"
+    }
+  });
+
+  assert.equal(output.events.at(-1)?.event, "browse.listChanged");
+  assert.equal(output.events.at(-1)?.payload.page.list.title, "In Utero");
+  assert.equal(output.events.at(-1)?.payload.page.items[0].title, "Serve the Servants");
+});
+
+test("transport.mute forwards output mute requests", async () => {
+  const output = new TestOutput();
+  const controller = new RoonBridgeController(output);
+
+  let observed = null;
+  controller.core = {
+    services: {
+      RoonApiTransport: {
+        mute(outputID, how, callback) {
+          observed = { outputID, how };
+          callback(false);
+        }
+      }
+    }
+  };
+
+  await controller.handle({
+    method: "transport.mute",
+    params: {
+      outputID: "output-1",
+      how: "mute"
+    }
+  });
+
+  assert.deepEqual(observed, {
+    outputID: "output-1",
+    how: "mute"
+  });
+});
+
+test("queue.subscribe emits a mapped queue snapshot", async () => {
+  const output = new TestOutput();
+  const controller = new RoonBridgeController(output);
+
+  controller.core = {
+    services: {
+      RoonApiTransport: {
+        subscribe_queue(zoneOrOutputID, maxItemCount, callback) {
+          callback("Subscribed", {
+            zone_id: zoneOrOutputID,
+            title: "Up Next",
+            count: 2,
+            now_playing_queue_item_id: "queue-2",
+            items: [
+              {
+                queue_item_id: "queue-1",
+                three_line: {
+                  line1: "Track One",
+                  line2: "Artist One",
+                  line3: "Album One"
+                }
+              },
+              {
+                queue_item_id: "queue-2",
+                three_line: {
+                  line1: "Track Two",
+                  line2: "Artist Two",
+                  line3: "Album Two"
+                }
+              }
+            ]
+          });
+
+          return {
+            unsubscribe() {}
+          };
+        }
+      }
+    }
+  };
+
+  await controller.handle({
+    method: "queue.subscribe",
+    params: {
+      zoneOrOutputID: "zone-1",
+      maxItemCount: 100
+    }
+  });
+
+  assert.deepEqual(output.events.at(-1), {
+    event: "queue.snapshot",
+    payload: {
+      queue: {
+        zoneID: "zone-1",
+        title: "Up Next",
+        totalCount: 2,
+        currentQueueItemID: "queue-2",
+        items: [
+          {
+            queueItemID: "queue-1",
+            title: "Track One",
+            subtitle: "Artist One",
+            detail: "Album One",
+            imageKey: null,
+            length: null,
+            isCurrent: false
+          },
+          {
+            queueItemID: "queue-2",
+            title: "Track Two",
+            subtitle: "Artist Two",
+            detail: "Album Two",
+            imageKey: null,
+            length: null,
+            isCurrent: true
+          }
+        ]
+      }
+    }
+  });
+});
+
+test("stale queue unsubscribe does not clear a newer queue subscription", async () => {
+  const output = new TestOutput();
+  const controller = new RoonBridgeController(output);
+
+  let unsubscribeFirst = null;
+  let secondCallback = null;
+
+  controller.core = {
+    services: {
+      RoonApiTransport: {
+        subscribe_queue(zoneOrOutputID, maxItemCount, callback) {
+          callback("Subscribed", {
+            zone_id: zoneOrOutputID,
+            title: "Queue",
+            count: 1,
+            items: [
+              {
+                queue_item_id: `${zoneOrOutputID}-item-1`,
+                three_line: {
+                  line1: `${zoneOrOutputID} Track`,
+                  line2: "Artist",
+                  line3: "Album"
+                }
+              }
+            ]
+          });
+
+          if (zoneOrOutputID === "zone-1") {
+            unsubscribeFirst = () => callback("Unsubscribed", {});
+          } else {
+            secondCallback = callback;
+          }
+
+          return {
+            unsubscribe() {
+              if (zoneOrOutputID === "zone-1") {
+                unsubscribeFirst?.();
+              } else {
+                callback("Unsubscribed", {});
+              }
+            }
+          };
+        }
+      }
+    }
+  };
+
+  await controller.handle({
+    method: "queue.subscribe",
+    params: {
+      zoneOrOutputID: "zone-1",
+      maxItemCount: 100
+    }
+  });
+
+  await controller.handle({
+    method: "queue.subscribe",
+    params: {
+      zoneOrOutputID: "zone-2",
+      maxItemCount: 100
+    }
+  });
+
+  // Simulate a late stale callback from the first subscription after zone-2 is active.
+  unsubscribeFirst?.();
+  secondCallback?.("Changed", {
+    zone_id: "zone-2",
+    changes: [
+      {
+        operation: "insert",
+        index: 1,
+        items: [
+          {
+            queue_item_id: "zone-2-item-2",
+            three_line: {
+              line1: "Zone 2 Track 2",
+              line2: "Artist",
+              line3: "Album"
+            }
+          }
+        ]
+      }
+    ]
+  });
+
+  const snapshots = output.events.filter(({ event }) => event === "queue.snapshot");
+  const changes = output.events.filter(({ event }) => event === "queue.changed");
+
+  assert.equal(snapshots.at(-1)?.payload.queue?.zoneID, "zone-2");
+  assert.equal(snapshots.at(-1)?.payload.queue?.items.length, 1);
+  assert.equal(changes.at(-1)?.payload.queue?.zoneID, "zone-2");
+  assert.equal(changes.at(-1)?.payload.queue?.items.length, 2);
+});
+
+test("queue.playFromHere forwards queue item selection", async () => {
+  const output = new TestOutput();
+  const controller = new RoonBridgeController(output);
+
+  let observed = null;
+  controller.core = {
+    services: {
+      RoonApiTransport: {
+        play_from_here(zoneOrOutputID, queueItemID, callback) {
+          observed = { zoneOrOutputID, queueItemID };
+          callback({ name: "Success" });
+        }
+      }
+    }
+  };
+
+  await controller.handle({
+    method: "queue.playFromHere",
+    params: {
+      zoneOrOutputID: "zone-1",
+      queueItemID: "queue-2"
+    }
+  });
+
+  assert.deepEqual(observed, {
+    zoneOrOutputID: "zone-1",
+    queueItemID: "queue-2"
+  });
+});
+
 test("browse.submitInput refreshes the current list when Roon responds with replace_item", async () => {
   const output = new TestOutput();
   const controller = new RoonBridgeController(output);

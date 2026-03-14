@@ -14,11 +14,15 @@ final class AppModel {
     var connectionStatus: ConnectionStatus = .disconnected
     var currentCore: CoreSummary?
     var manualConnect = ManualConnectConfiguration(host: "127.0.0.1", port: 9100)
-    var selectedHierarchy: BrowseHierarchy = .browse
+    var selectedHierarchy: BrowseHierarchy = .albums
     var browsePage: BrowsePage?
     var browseItemsByIndex: [Int: BrowseItem] = [:]
+    var browseServices: [BrowseServiceSummary] = []
+    var selectedBrowseServiceTitle: String?
     var zones: [ZoneSummary] = []
     var selectedZoneID: String?
+    var queueState: QueueState?
+    var isQueueSidebarVisible = false
     var errorState: ErrorState?
     var helperStatus = "Idle"
     var lastBridgeError: BridgeErrorPayload?
@@ -50,6 +54,10 @@ final class AppModel {
     private var volumeUpdateTask: Task<Void, Never>?
     @ObservationIgnored
     private var pendingSeekStates: [String: PendingSeekState] = [:]
+    @ObservationIgnored
+    private var queueSubscriptionZoneID: String?
+    @ObservationIgnored
+    private var hasLoadedBrowseServices = false
 
     private let browsePageSize = 100
     private let pendingSeekGraceInterval: TimeInterval = 2.0
@@ -91,6 +99,25 @@ final class AppModel {
         self.bridge = nil
         connectionMonitorTask?.cancel()
         connectionMonitorTask = nil
+    }
+
+    func prepareForTermination() {
+        connectionMonitorTask?.cancel()
+        connectionMonitorTask = nil
+
+        guard let bridge else {
+            return
+        }
+
+        if let helper = bridge as? HelperProcessController {
+            helper.terminateSynchronously()
+        } else {
+            Task {
+                await bridge.stop()
+            }
+        }
+
+        self.bridge = nil
     }
 
     func connectAutomatically() {
@@ -151,8 +178,34 @@ final class AppModel {
         }
     }
 
+    func subscribeToQueue() {
+        guard let selectedZoneID else {
+            queueState = nil
+            queueSubscriptionZoneID = nil
+            return
+        }
+        guard queueSubscriptionZoneID != selectedZoneID else {
+            return
+        }
+
+        queueSubscriptionZoneID = selectedZoneID
+        queueState = nil
+
+        Task {
+            do {
+                try await bridge?.send("queue.subscribe", params: QueueSubscribeParams(
+                    zoneOrOutputID: selectedZoneID,
+                    maxItemCount: 300
+                ))
+            } catch {
+                errorState = ErrorState(title: "Queue Subscription Failed", message: error.localizedDescription)
+            }
+        }
+    }
+
     func openHierarchy(_ hierarchy: BrowseHierarchy) {
         selectedHierarchy = hierarchy
+        selectedBrowseServiceTitle = nil
         if hierarchy != .search {
             pendingSearchQuery = nil
         }
@@ -168,6 +221,31 @@ final class AppModel {
         }
     }
 
+    func openBrowseService(_ service: BrowseServiceSummary) {
+        selectedHierarchy = .browse
+        selectedBrowseServiceTitle = service.title
+        pendingSearchQuery = nil
+
+        Task {
+            do {
+                try await bridge?.send("browse.openService", params: BrowseOpenServiceParams(
+                    title: service.title,
+                    zoneOrOutputID: selectedZoneID
+                ))
+            } catch {
+                errorState = ErrorState(title: "Browse Failed", message: error.localizedDescription)
+            }
+        }
+    }
+
+    func goHome() {
+        if let selectedBrowseServiceTitle, selectedHierarchy == .browse {
+            openBrowseService(BrowseServiceSummary(title: selectedBrowseServiceTitle))
+            return
+        }
+        openHierarchy(selectedHierarchy)
+    }
+
     func runSearch() {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard query.isEmpty == false else {
@@ -175,6 +253,7 @@ final class AppModel {
         }
 
         selectedHierarchy = .search
+        selectedBrowseServiceTitle = nil
         pendingSearchQuery = query
 
         Task {
@@ -185,6 +264,58 @@ final class AppModel {
                 ))
             } catch {
                 errorState = ErrorState(title: "Search Failed", message: error.localizedDescription)
+            }
+        }
+    }
+
+    func openNowPlayingArtist() {
+        guard
+            let artistName = selectedZone?.nowPlaying?.subtitle?.trimmingCharacters(in: .whitespacesAndNewlines),
+            artistName.isEmpty == false
+        else {
+            return
+        }
+
+        selectedHierarchy = .search
+        selectedBrowseServiceTitle = nil
+        pendingSearchQuery = nil
+
+        Task {
+            do {
+                try await bridge?.send("browse.openSearchMatch", params: BrowseOpenSearchMatchParams(
+                    query: artistName,
+                    categoryTitle: "Artists",
+                    matchTitle: artistName,
+                    zoneOrOutputID: selectedZoneID
+                ))
+            } catch {
+                errorState = ErrorState(title: "Artist Navigation Failed", message: error.localizedDescription)
+            }
+        }
+    }
+
+    func openNowPlayingAlbum() {
+        guard
+            let albumTitle = selectedZone?.nowPlaying?.detail?.trimmingCharacters(in: .whitespacesAndNewlines),
+            albumTitle.isEmpty == false
+        else {
+            return
+        }
+
+        selectedHierarchy = .search
+        selectedBrowseServiceTitle = nil
+        pendingSearchQuery = nil
+
+        Task {
+            do {
+                try await bridge?.send("browse.openSearchMatch", params: BrowseOpenSearchMatchParams(
+                    query: albumTitle,
+                    categoryTitle: "Albums",
+                    matchTitle: albumTitle,
+                    zoneOrOutputID: selectedZoneID
+                ))
+            } catch {
+                errorState = ErrorState(title: "Album Navigation Failed", message: error.localizedDescription)
             }
         }
     }
@@ -421,6 +552,52 @@ final class AppModel {
         }
     }
 
+    func toggleMute() {
+        guard let output = selectedVolumeOutput else {
+            return
+        }
+
+        let targetMode: OutputMuteMode = output.volume?.isMuted == true ? .unmute : .mute
+
+        Task {
+            do {
+                try await bridge?.send("transport.mute", params: TransportMuteParams(
+                    outputID: output.outputID,
+                    how: targetMode
+                ))
+            } catch {
+                errorState = ErrorState(title: "Mute Failed", message: error.localizedDescription)
+            }
+        }
+    }
+
+    func toggleQueueSidebar() {
+        isQueueSidebarVisible.toggle()
+    }
+
+    func selectZone(_ zoneID: String?) {
+        selectedZoneID = zoneID
+        queueSubscriptionZoneID = nil
+        subscribeToQueue()
+    }
+
+    func playQueueItem(_ item: QueueItemSummary) {
+        guard let selectedZoneID else {
+            return
+        }
+
+        Task {
+            do {
+                try await bridge?.send("queue.playFromHere", params: QueuePlayFromHereParams(
+                    zoneOrOutputID: selectedZoneID,
+                    queueItemID: item.queueItemID
+                ))
+            } catch {
+                errorState = ErrorState(title: "Queue Playback Failed", message: error.localizedDescription)
+            }
+        }
+    }
+
     var selectedZone: ZoneSummary? {
         guard let selectedZoneID else {
             return nil
@@ -504,6 +681,8 @@ final class AppModel {
             case .disconnected:
                 currentCore = nil
                 connectionStatus = .disconnected
+                queueState = nil
+                queueSubscriptionZoneID = nil
                 connectionMonitorTask?.cancel()
                 connectionMonitorTask = nil
             case let .connecting(mode):
@@ -513,11 +692,12 @@ final class AppModel {
                 connectionStatus = .connected(core)
                 autoConnectionIssue = nil
                 persistEndpointIfNeeded(for: core)
+                loadBrowseServicesIfNeeded()
                 connectionMonitorTask?.cancel()
                 connectionMonitorTask = nil
                 userInitiatedDisconnect = false
                 subscribeToZones()
-                openHierarchy(selectedHierarchy)
+                goHome()
             case let .authorizing(core):
                 currentCore = core
                 connectionStatus = .authorizing(core)
@@ -534,6 +714,10 @@ final class AppModel {
             replaceZones(with: payload.zones)
         case let .zonesChanged(payload):
             mergeZones(payload.zones)
+        case let .queueSnapshot(payload):
+            queueState = payload.queue
+        case let .queueChanged(payload):
+            queueState = payload.queue
         case let .browseListChanged(payload):
             if
                 selectedHierarchy == .search,
@@ -549,6 +733,9 @@ final class AppModel {
                     submitPrompt(for: promptItem, value: pendingSearchQuery)
                     return
                 }
+            }
+            if payload.page.hierarchy == .browse, payload.page.list.level == 0 {
+                selectedBrowseServiceTitle = nil
             }
             applyBrowsePage(payload.page)
         case let .browseItemReplaced(payload):
@@ -590,11 +777,36 @@ final class AppModel {
     }
 
     private func makeBridgeService() -> BridgeService {
+        if NativeBridgeRuntimeConfiguration.isEnabled {
+            return NativeRoonBridgeService()
+        }
+
         let helperURL = Bundle.module.url(forResource: "launch-helper", withExtension: "sh", subdirectory: "Resources")
         if let helperURL {
             return HelperProcessController(launchPath: helperURL)
         }
         return MockBridgeService()
+    }
+
+    private func loadBrowseServicesIfNeeded() {
+        guard hasLoadedBrowseServices == false else {
+            return
+        }
+        hasLoadedBrowseServices = true
+
+        Task {
+            do {
+                guard let bridge else {
+                    return
+                }
+                let result = try await bridge.request("browse.services", params: EmptyParams(), as: BrowseServicesResult.self)
+                browseServices = result.services.sorted {
+                    $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+                }
+            } catch {
+                browseServices = []
+            }
+        }
     }
 
     private func replaceZones(with incoming: [ZoneSummary]) {
@@ -609,6 +821,7 @@ final class AppModel {
             return (zone.zoneID, Date())
         })
         normalizeSelectedZone()
+        subscribeToQueue()
     }
 
     private func mergeZones(_ incoming: [ZoneSummary]) {
@@ -629,6 +842,7 @@ final class AppModel {
 
         zones = merged.values.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
         normalizeSelectedZone()
+        subscribeToQueue()
     }
 
     private func normalizeSelectedZone() {

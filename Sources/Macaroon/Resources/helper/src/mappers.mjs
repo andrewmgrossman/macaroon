@@ -123,6 +123,144 @@ export function toBrowsePage({ hierarchy, list, items, offset, selectedZoneID })
   };
 }
 
+function queueLinesForItem(item) {
+  if (item.three_line) {
+    return {
+      title: item.three_line.line1 ?? "Unknown",
+      subtitle: item.three_line.line2 ?? null,
+      detail: item.three_line.line3 ?? null
+    };
+  }
+
+  if (item.two_line) {
+    return {
+      title: item.two_line.line1 ?? "Unknown",
+      subtitle: item.two_line.line2 ?? null,
+      detail: null
+    };
+  }
+
+  if (item.one_line) {
+    return {
+      title: item.one_line.line1 ?? "Unknown",
+      subtitle: null,
+      detail: null
+    };
+  }
+
+  return {
+    title: item.title ?? "Unknown",
+    subtitle: item.subtitle ?? null,
+    detail: item.detail ?? null
+  };
+}
+
+function toQueueItemSummary(item, inferredCurrentQueueItemID, fallbackIndex = 0) {
+  const queueItemID = String(item.queue_item_id ?? item.item_id ?? item.id ?? `queue-item-${fallbackIndex}`);
+  const lines = queueLinesForItem(item);
+  return {
+    queueItemID,
+    title: lines.title,
+    subtitle: lines.subtitle,
+    detail: lines.detail,
+    imageKey: item.image_key ?? null,
+    length: item.length ?? item.duration ?? null,
+    isCurrent:
+      item.is_current === true ||
+      item.now_playing === true ||
+      (inferredCurrentQueueItemID !== null && queueItemID === inferredCurrentQueueItemID)
+  };
+}
+
+export function toQueueState(message, zoneOrOutputID, previousState = null) {
+  const inferredCurrentQueueItemID =
+    message.now_playing_queue_item_id ??
+    message.current_queue_item_id ??
+    message.queue_item_id ??
+    message.items?.find((item) => item.is_current === true || item.now_playing === true)?.queue_item_id ??
+    message.queue_items?.find((item) => item.is_current === true || item.now_playing === true)?.queue_item_id ??
+    previousState?.currentQueueItemID ??
+    null;
+
+  const fullItemPayload = message.items ?? message.queue_items ?? message.queue?.items ?? null;
+  let items = fullItemPayload
+    ? fullItemPayload.map((item, index) => toQueueItemSummary(item, inferredCurrentQueueItemID, index))
+    : (previousState?.items ?? []).map((item) => ({
+        ...item,
+        isCurrent: inferredCurrentQueueItemID !== null && item.queueItemID === inferredCurrentQueueItemID
+      }));
+
+  if (fullItemPayload == null) {
+    const byID = new Map(items.map((item) => [item.queueItemID, item]));
+
+    for (const changed of message.items_changed ?? []) {
+      const summary = toQueueItemSummary(changed, inferredCurrentQueueItemID, byID.size);
+      byID.set(summary.queueItemID, summary);
+    }
+
+    for (const added of message.items_added ?? []) {
+      const summary = toQueueItemSummary(added, inferredCurrentQueueItemID, byID.size);
+      byID.set(summary.queueItemID, summary);
+    }
+
+    for (const removed of message.items_removed ?? []) {
+      const removedID = String(removed.queue_item_id ?? removed.item_id ?? removed.id ?? removed);
+      byID.delete(removedID);
+    }
+
+    items = Array.from(byID.values()).map((item) => ({
+      ...item,
+      isCurrent: inferredCurrentQueueItemID !== null && item.queueItemID === inferredCurrentQueueItemID
+    }));
+  }
+
+  if (Array.isArray(message.changes) && message.changes.length > 0) {
+    let orderedItems = [...(previousState?.items ?? items)];
+
+    for (const change of message.changes) {
+      if (change.operation === "remove") {
+        const index = Math.max(0, change.index ?? 0);
+        const count = Math.max(0, change.count ?? 0);
+        orderedItems.splice(index, count);
+        continue;
+      }
+
+      if (change.operation === "insert") {
+        const index = Math.max(0, change.index ?? orderedItems.length);
+        const insertedItems = (change.items ?? []).map((item, itemIndex) =>
+          toQueueItemSummary(item, inferredCurrentQueueItemID, index + itemIndex)
+        );
+        orderedItems.splice(index, 0, ...insertedItems);
+        continue;
+      }
+    }
+
+    items = orderedItems.map((item, itemIndex) => ({
+      ...item,
+      queueItemID: item.queueItemID ?? `queue-item-${itemIndex}`,
+      isCurrent: inferredCurrentQueueItemID !== null
+        ? item.queueItemID === inferredCurrentQueueItemID
+        : item.isCurrent
+    }));
+  }
+
+  const currentQueueItemID =
+    items.find((item) => item.isCurrent)?.queueItemID ??
+    inferredCurrentQueueItemID;
+
+  return {
+    zoneID: String(message.zone_id ?? zoneOrOutputID),
+    title: message.title ?? message.display_name ?? previousState?.title ?? "Queue",
+    totalCount:
+      message.count ??
+      message.total_count ??
+      message.queue_count ??
+      items.length,
+    currentQueueItemID,
+    items
+  };
+}
+
 export async function saveArtwork(imageKey, bytes, extension = "jpg") {
   const directory = path.join(os.tmpdir(), "macaroon-artwork");
   await fs.mkdir(directory, { recursive: true });

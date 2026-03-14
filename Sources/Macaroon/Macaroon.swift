@@ -2,6 +2,8 @@ import AppKit
 import SwiftUI
 
 final class MacaroonAppDelegate: NSObject, NSApplicationDelegate {
+    weak var appModel: AppModel?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         if let iconURL = Bundle.module.url(forResource: "AppIcon", withExtension: "png", subdirectory: "Resources"),
@@ -9,6 +11,10 @@ final class MacaroonAppDelegate: NSObject, NSApplicationDelegate {
             NSApp.applicationIconImage = iconImage
         }
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        appModel?.prepareForTermination()
     }
 }
 
@@ -22,6 +28,9 @@ struct Macaroon: App {
             RootView()
                 .environment(appModel)
                 .frame(minWidth: 1100, minHeight: 720)
+                .task {
+                    appDelegate.appModel = appModel
+                }
         }
         .defaultSize(width: 1280, height: 820)
         .windowToolbarStyle(.unified(showsTitle: false))

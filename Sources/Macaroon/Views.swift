@@ -11,9 +11,9 @@ struct RootView: View {
     var body: some View {
         NavigationSplitView {
             SidebarView()
-                .navigationSplitViewColumnWidth(min: 220, ideal: 240, max: 280)
+                .navigationSplitViewColumnWidth(min: 150, ideal: 210, max: 280)
         } detail: {
-            BrowserView()
+            MainContentView()
         }
         .navigationSplitViewStyle(.balanced)
         .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -37,7 +37,7 @@ struct RootView: View {
                 .disabled((model.browsePage?.list.level ?? 0) == 0)
 
                 Button {
-                    model.openHierarchy(model.selectedHierarchy)
+                    model.goHome()
                 } label: {
                     Image(systemName: "house")
                 }
@@ -56,10 +56,44 @@ struct RootView: View {
             ToolbarItem(placement: .automatic) {
                 SearchToolbarField()
             }
+
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    model.toggleQueueSidebar()
+                } label: {
+                    Image(systemName: "sidebar.right")
+                }
+                .buttonStyle(.bordered)
+                .help(model.isQueueSidebarVisible ? "Hide Queue" : "Show Queue")
+            }
         }
         .onAppear {
             model.start()
         }
+    }
+}
+
+private struct MainContentView: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        ZStack(alignment: .trailing) {
+            BrowserView()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            if model.isQueueSidebarVisible {
+                HStack(spacing: 0) {
+                    Divider()
+                    QueueSidebar()
+                        .frame(width: 320)
+                }
+                .frame(maxHeight: .infinity)
+                .background(.regularMaterial)
+                .shadow(color: .black.opacity(0.08), radius: 12, y: 2)
+                .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.18), value: model.isQueueSidebarVisible)
     }
 }
 
@@ -69,13 +103,31 @@ private struct SidebarView: View {
     var body: some View {
         List {
             Section("Library") {
-                ForEach(BrowseHierarchy.sidebarCases) { hierarchy in
+                ForEach(BrowseHierarchy.libraryCases) { hierarchy in
                     SidebarRow(
                         title: hierarchy.title,
                         icon: iconName(for: hierarchy),
                         isSelected: hierarchy == model.selectedHierarchy
                     ) {
                         model.openHierarchy(hierarchy)
+                    }
+                }
+            }
+
+            Section("Browse") {
+                if model.browseServices.isEmpty {
+                    Text("No Services")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(model.browseServices) { service in
+                        SidebarRow(
+                            title: service.title,
+                            icon: "globe",
+                            isSelected: model.selectedHierarchy == .browse && model.selectedBrowseServiceTitle == service.title
+                        ) {
+                            model.openBrowseService(service)
+                        }
                     }
                 }
             }
@@ -103,13 +155,13 @@ private struct SidebarView: View {
 
     private func iconName(for hierarchy: BrowseHierarchy) -> String {
         switch hierarchy {
-        case .browse: "square.grid.2x2"
         case .playlists: "music.note.list"
         case .albums: "rectangle.stack"
         case .artists: "music.mic"
         case .genres: "guitars"
         case .composers: "music.quarternote.3"
         case .internetRadio: "dot.radiowaves.left.and.right"
+        case .browse: "square.grid.2x2"
         case .search: "magnifyingglass"
         }
     }
@@ -258,19 +310,15 @@ private struct BrowserHeader: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(model.browsePage?.list.title ?? model.selectedHierarchy.title)
                     .font(.system(size: 30, weight: .semibold, design: .default))
-                HStack(spacing: 8) {
-                    if let subtitle = model.browsePage?.list.subtitle, subtitle.isEmpty == false {
-                        Text(subtitle)
-                    } else if let count = model.browsePage?.list.count {
-                        Text("\(count) items")
-                    }
-
-                    if let core = model.currentCore {
-                        Text("on \(core.displayName)")
-                    }
+                if let subtitle = model.browsePage?.list.subtitle, subtitle.isEmpty == false {
+                    Text(subtitle)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                } else if let count = model.browsePage?.list.count {
+                    Text("\(count) items")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
                 }
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
             }
 
             Spacer()
@@ -291,20 +339,38 @@ private struct MiniPlayerBar: View {
             HStack(spacing: 20) {
                 if let nowPlaying = model.selectedZone?.nowPlaying {
                     HStack(spacing: 14) {
-                        ArtworkView(
-                            imageKey: nowPlaying.imageKey,
-                            title: nowPlaying.title,
-                            size: CGSize(width: 52, height: 52)
-                        )
+                        Button {
+                            model.openNowPlayingAlbum()
+                        } label: {
+                            ArtworkView(
+                                imageKey: nowPlaying.imageKey,
+                                title: nowPlaying.title,
+                                size: CGSize(width: 52, height: 52)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .disabled((nowPlaying.detail ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
                         VStack(alignment: .leading, spacing: 3) {
                             Text(nowPlaying.title)
                                 .font(.system(size: 13, weight: .semibold))
                                 .lineLimit(1)
-                            Text(nowPlaying.subtitle ?? nowPlaying.detail ?? " ")
-                                .font(.system(size: 12))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
+                            if let subtitle = nowPlaying.subtitle, subtitle.isEmpty == false {
+                                Button {
+                                    model.openNowPlayingArtist()
+                                } label: {
+                                    Text(subtitle)
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                                .buttonStyle(.plain)
+                            } else {
+                                Text(nowPlaying.detail ?? " ")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
                             Text(model.selectedZone?.state.capitalized ?? " ")
                                 .font(.caption)
                                 .foregroundStyle(.tertiary)
@@ -325,13 +391,12 @@ private struct MiniPlayerBar: View {
 
                 HStack(spacing: 12) {
                     VStack(alignment: .trailing, spacing: 10) {
-                        Picker("Zone", selection: Binding(
-                            get: { model.selectedZoneID ?? "" },
-                            set: { zoneID in
-                                model.selectedZoneID = zoneID.isEmpty ? nil : zoneID
-                                model.refreshBrowse()
-                            }
-                        )) {
+                    Picker("Zone", selection: Binding(
+                        get: { model.selectedZoneID ?? "" },
+                        set: { zoneID in
+                            model.selectZone(zoneID.isEmpty ? nil : zoneID)
+                        }
+                    )) {
                             ForEach(model.zones) { zone in
                                 Text(zone.displayName).tag(zone.zoneID)
                             }
@@ -352,11 +417,143 @@ private struct MiniPlayerBar: View {
     }
 }
 
+private struct QueueSidebar: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Queue")
+                        .font(.system(size: 22, weight: .semibold))
+                    if let queueState = model.queueState {
+                        Text(queueSubtitle(for: queueState))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else if let zone = model.selectedZone {
+                        Text(zone.displayName)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Spacer()
+            }
+            .padding(.horizontal, 18)
+            .padding(.top, 22)
+            .padding(.bottom, 14)
+
+            if let queueState = model.queueState, queueState.items.isEmpty == false {
+                ScrollView {
+                    LazyVStack(spacing: 8) {
+                        ForEach(queueState.items) { item in
+                            QueueRow(item: item) {
+                                model.playQueueItem(item)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 18)
+                }
+            } else {
+                ContentUnavailableView(
+                    "No Queue",
+                    systemImage: "text.line.first.and.arrowtriangle.forward",
+                    description: Text("Playback queue items for the selected zone will appear here.")
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(.horizontal, 18)
+            }
+        }
+        .background(Color(nsColor: .underPageBackgroundColor))
+    }
+
+    private func queueSubtitle(for queueState: QueueState) -> String {
+        if queueState.totalCount == 1 {
+            return "1 item"
+        }
+        return "\(queueState.totalCount) items"
+    }
+}
+
+private struct QueueRow: View {
+    let item: QueueItemSummary
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                ArtworkView(
+                    imageKey: item.imageKey,
+                    title: item.title,
+                    size: CGSize(width: 44, height: 44)
+                )
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(item.title)
+                        .font(.system(size: 13, weight: item.isCurrent ? .semibold : .medium))
+                        .foregroundStyle(.primary)
+                        .lineLimit(2)
+
+                    if let subtitle = item.subtitle, subtitle.isEmpty == false {
+                        Text(subtitle)
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+
+                    if let detail = item.detail, detail.isEmpty == false {
+                        Text(detail)
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
+                }
+
+                Spacer(minLength: 8)
+
+                VStack(alignment: .trailing, spacing: 6) {
+                    if item.isCurrent {
+                        Image(systemName: "speaker.wave.2.fill")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Color.accentColor)
+                    }
+                    if let length = item.length {
+                        Text(formatTime(length))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(item.isCurrent ? Color.accentColor.opacity(0.12) : Color(nsColor: .controlBackgroundColor))
+            )
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button("Play From Here", action: action)
+        }
+    }
+
+    private func formatTime(_ seconds: Double) -> String {
+        guard seconds.isFinite else {
+            return "--:--"
+        }
+        let total = max(0, Int(seconds.rounded(.down)))
+        let minutes = total / 60
+        let secs = total % 60
+        return String(format: "%d:%02d", minutes, secs)
+    }
+}
+
 private struct MiniPlayerTransportSection: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 6) {
             MiniPlayerProgressSection()
 
             HStack(spacing: 14) {
@@ -468,9 +665,7 @@ private struct MiniPlayerVolumeControl: View {
         if let output = model.selectedVolumeOutput, let volume = output.volume {
             if volume.supportsSlider {
                 HStack(spacing: 8) {
-                    Image(systemName: "speaker.wave.2.fill")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
+                    muteButton(isMuted: volume.isMuted == true)
 
                     Slider(
                         value: Binding(
@@ -505,6 +700,8 @@ private struct MiniPlayerVolumeControl: View {
                 }
             } else if volume.supportsStepAdjustments {
                 HStack(spacing: 6) {
+                    muteButton(isMuted: volume.isMuted == true)
+
                     Button {
                         model.stepVolume(by: -1)
                     } label: {
@@ -521,6 +718,18 @@ private struct MiniPlayerVolumeControl: View {
                 }
             }
         }
+    }
+
+    private func muteButton(isMuted: Bool) -> some View {
+        Button {
+            model.toggleMute()
+        } label: {
+            Image(systemName: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                .font(.system(size: 12))
+                .foregroundStyle(isMuted ? .primary : .secondary)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(isMuted ? "Unmute" : "Mute")
     }
 }
 
@@ -559,12 +768,14 @@ private struct SidebarRow: View {
                     .font(.system(size: 13))
                 Spacer()
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(isSelected ? Color.accentColor.opacity(0.14) : .clear)
             )
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }

@@ -5,6 +5,7 @@ import {
   toBrowseItem,
   toBrowsePage,
   toCoreSummary,
+  toQueueState,
   toZoneSummary
 } from "./mappers.mjs";
 
@@ -22,6 +23,10 @@ export class RoonBridgeController {
     this.core = null;
     this.coreLocation = { host: null, port: null };
     this.transportSubscription = null;
+    this.queueSubscription = null;
+    this.queueState = null;
+    this.queueZoneOrOutputID = null;
+    this.queueSubscriptionGeneration = 0;
     this.browseSessions = new Map();
     this.contextSessions = new Map();
     this.connectionMode = "idle";
@@ -38,6 +43,10 @@ export class RoonBridgeController {
     this.roon.init_services({
       required_services: [RoonApiBrowse, RoonApiTransport, RoonApiImage]
     });
+  }
+
+  shutdown() {
+    this.#disconnect({ intentional: true, emitState: false });
   }
 
   #sessionContextForHierarchy(hierarchy) {
@@ -73,12 +82,23 @@ export class RoonBridgeController {
       case "zones.subscribe":
         this.#subscribeToZones();
         return {};
+      case "queue.subscribe":
+        this.#subscribeToQueue(message.params.zoneOrOutputID, message.params.maxItemCount);
+        return {};
+      case "queue.playFromHere":
+        await this.#playFromQueue(message.params.zoneOrOutputID, message.params.queueItemID);
+        return {};
+      case "browse.services":
+        return await this.#browseServices();
       case "browse.open":
         await this.#browse({
           hierarchy: message.params.hierarchy,
           zoneOrOutputID: message.params.zoneOrOutputID ?? null,
           itemKey: message.params.itemKey
         });
+        return {};
+      case "browse.openService":
+        await this.#openBrowseService(message.params.title, message.params.zoneOrOutputID ?? null);
         return {};
       case "browse.back":
         await this.#browse({
@@ -121,6 +141,9 @@ export class RoonBridgeController {
       case "browse.performAction":
         await this.#performContextAction(message.params);
         return {};
+      case "browse.openSearchMatch":
+        await this.#openSearchMatch(message.params);
+        return {};
       case "transport.command":
         await this.#transport(message.params.zoneOrOutputID, message.params.command);
         return {};
@@ -129,6 +152,9 @@ export class RoonBridgeController {
         return {};
       case "transport.changeVolume":
         await this.#changeVolume(message.params.outputID, message.params.how, message.params.value);
+        return {};
+      case "transport.mute":
+        await this.#mute(message.params.outputID, message.params.how);
         return {};
       case "image.fetch":
         return await this.#fetchImage(message.params);
@@ -267,6 +293,7 @@ export class RoonBridgeController {
     this.roon.disconnect_all?.();
     this.#closeActiveMoo("ignore");
     this.transportSubscription = null;
+    this.#clearQueueSubscription();
     this.core = null;
     if (emitState) {
       this.emit("core.connectionChanged", {
@@ -315,6 +342,9 @@ export class RoonBridgeController {
     const closeDisposition = this.closeDisposition?.attemptID === attemptID ? this.closeDisposition : null;
     this.closeDisposition = null;
     this.transportSubscription = null;
+    this.queueSubscription = null;
+    this.queueState = null;
+    this.queueZoneOrOutputID = null;
     this.activeMoo = null;
     this.activeConnectionAttemptID = 0;
     this.core = null;
@@ -492,6 +522,54 @@ export class RoonBridgeController {
     });
   }
 
+  #subscribeToQueue(zoneOrOutputID, maxItemCount = 300) {
+    const core = this.#ensureCore();
+    const transport = core.services.RoonApiTransport;
+
+    this.#clearQueueSubscription();
+    this.queueZoneOrOutputID = zoneOrOutputID;
+    const generation = this.queueSubscriptionGeneration;
+
+    this.queueSubscription = transport.subscribe_queue(zoneOrOutputID, maxItemCount, (response, message) => {
+      if (generation !== this.queueSubscriptionGeneration) {
+        return;
+      }
+
+      if (response === "Subscribed") {
+        this.queueState = toQueueState(message ?? {}, zoneOrOutputID, null);
+        this.emit("queue.snapshot", {
+          queue: this.queueState
+        });
+        return;
+      }
+
+      if (response === "Changed") {
+        this.queueState = toQueueState(message ?? {}, zoneOrOutputID, this.queueState);
+        this.emit("queue.changed", {
+          queue: this.queueState
+        });
+        return;
+      }
+
+      if (response === "Unsubscribed") {
+        this.#clearQueueSubscription();
+        this.emit("queue.snapshot", {
+          queue: null
+        });
+      }
+    });
+  }
+
+  #clearQueueSubscription() {
+    this.queueSubscriptionGeneration += 1;
+    if (this.queueSubscription?.unsubscribe) {
+      this.queueSubscription.unsubscribe(() => {});
+    }
+    this.queueSubscription = null;
+    this.queueState = null;
+    this.queueZoneOrOutputID = null;
+  }
+
   async #browse({ hierarchy, zoneOrOutputID, itemKey = undefined, input = undefined, popAll = false, popLevels = undefined, refreshList = false }) {
     const sessionContext = this.#sessionContextForHierarchy(hierarchy);
     const options = {
@@ -553,6 +631,21 @@ export class RoonBridgeController {
     }
   }
 
+  async #browseServices() {
+    const sessionKey = "macaroon-sidebar-services";
+    const items = await this.#loadBrowseRootItems({
+      hierarchy: "browse",
+      zoneOrOutputID: null,
+      multiSessionKey: sessionKey
+    });
+
+    return {
+      services: this.#serviceItemsFromBrowseRoot(items).map((item) => ({
+        title: item.title
+      }))
+    };
+  }
+
   async #loadBrowsePage(hierarchy, offset = 0, count = 100) {
     const state = this.browseSessions.get(hierarchy);
     const sessionContext = this.#sessionContextForHierarchy(hierarchy);
@@ -594,6 +687,146 @@ export class RoonBridgeController {
 
     const offset = Math.max(state.list.display_offset ?? 0, 0);
     await this.#loadBrowsePage(hierarchy, offset, 100);
+  }
+
+  async #openBrowseService(title, zoneOrOutputID) {
+    const rootItems = await this.#loadBrowseRootItems({
+      hierarchy: "browse",
+      zoneOrOutputID,
+      multiSessionKey: null
+    });
+
+    const serviceItem = rootItems.find((item) =>
+      item?.item_key &&
+      typeof item.title === "string" &&
+      item.title.localeCompare(title, undefined, { sensitivity: "accent" }) === 0
+    );
+    if (!serviceItem?.item_key) {
+      throw new Error(`Browse service '${title}' was not found.`);
+    }
+
+    const result = await this.#browseRequest({
+      hierarchy: "browse",
+      zone_or_output_id: zoneOrOutputID ?? undefined,
+      item_key: serviceItem.item_key
+    });
+
+    await this.#activateBrowseResult({
+      hierarchy: "browse",
+      result,
+      zoneOrOutputID,
+      requestHierarchy: "browse",
+      multiSessionKey: null
+    });
+  }
+
+  async #openSearchMatch({ query, categoryTitle, matchTitle, zoneOrOutputID }) {
+    const sessionContext = this.#sessionContextForHierarchy("search");
+    const rootItems = await this.#loadBrowseRootItems({
+      hierarchy: sessionContext.requestHierarchy,
+      zoneOrOutputID,
+      multiSessionKey: sessionContext.multiSessionKey
+    });
+
+    const libraryItem = rootItems.find((item) =>
+      item?.item_key &&
+      typeof item.title === "string" &&
+      item.title.localeCompare("Library", undefined, { sensitivity: "accent" }) === 0
+    );
+    if (!libraryItem?.item_key) {
+      throw new Error("Library search entry was not available.");
+    }
+
+    await this.#browseRequest({
+      hierarchy: sessionContext.requestHierarchy,
+      zone_or_output_id: zoneOrOutputID ?? undefined,
+      item_key: libraryItem.item_key,
+      multi_session_key: sessionContext.multiSessionKey
+    });
+
+    const promptPage = await this.#loadCurrentSessionItems({
+      hierarchy: sessionContext.requestHierarchy,
+      multiSessionKey: sessionContext.multiSessionKey
+    });
+    const promptItem = (promptPage.items ?? []).find((item) => item?.input_prompt?.prompt);
+    if (!promptItem?.item_key) {
+      throw new Error("Search prompt was not available.");
+    }
+
+    await this.#browseRequest({
+      hierarchy: sessionContext.requestHierarchy,
+      zone_or_output_id: zoneOrOutputID ?? undefined,
+      item_key: promptItem.item_key,
+      input: query,
+      multi_session_key: sessionContext.multiSessionKey
+    });
+
+    const resultsPage = await this.#loadCurrentSessionItems({
+      hierarchy: sessionContext.requestHierarchy,
+      multiSessionKey: sessionContext.multiSessionKey
+    });
+    const categoryItem = (resultsPage.items ?? []).find((item) =>
+      item?.item_key &&
+      typeof item.title === "string" &&
+      item.title.localeCompare(categoryTitle, undefined, { sensitivity: "accent" }) === 0
+    );
+    if (!categoryItem?.item_key) {
+      throw new Error(`Search category '${categoryTitle}' was not available.`);
+    }
+
+    await this.#browseRequest({
+      hierarchy: sessionContext.requestHierarchy,
+      zone_or_output_id: zoneOrOutputID ?? undefined,
+      item_key: categoryItem.item_key,
+      multi_session_key: sessionContext.multiSessionKey
+    });
+
+    const categoryPage = await this.#loadCurrentSessionItems({
+      hierarchy: sessionContext.requestHierarchy,
+      multiSessionKey: sessionContext.multiSessionKey
+    });
+    const matchedItem =
+      (categoryPage.items ?? []).find((item) =>
+        item?.item_key &&
+        typeof item.title === "string" &&
+        item.title.localeCompare(matchTitle, undefined, { sensitivity: "accent" }) === 0
+      ) ??
+      (categoryPage.items ?? []).find((item) => item?.item_key);
+
+    if (!matchedItem?.item_key) {
+      throw new Error(`No search result was available for '${matchTitle}'.`);
+    }
+
+    let result = await this.#browseRequest({
+      hierarchy: sessionContext.requestHierarchy,
+      zone_or_output_id: zoneOrOutputID ?? undefined,
+      item_key: matchedItem.item_key,
+      multi_session_key: sessionContext.multiSessionKey
+    });
+
+    if (categoryTitle.localeCompare("Albums", undefined, { sensitivity: "accent" }) === 0) {
+      const drilledItem = await this.#singleExactMatchItem({
+        hierarchy: sessionContext.requestHierarchy,
+        multiSessionKey: sessionContext.multiSessionKey,
+        matchTitle
+      });
+      if (drilledItem?.item_key) {
+        result = await this.#browseRequest({
+          hierarchy: sessionContext.requestHierarchy,
+          zone_or_output_id: zoneOrOutputID ?? undefined,
+          item_key: drilledItem.item_key,
+          multi_session_key: sessionContext.multiSessionKey
+        });
+      }
+    }
+
+    await this.#activateBrowseResult({
+      hierarchy: "search",
+      result,
+      zoneOrOutputID,
+      requestHierarchy: sessionContext.requestHierarchy,
+      multiSessionKey: sessionContext.multiSessionKey
+    });
   }
 
   async #transport(zoneOrOutputID, command) {
@@ -641,6 +874,21 @@ export class RoonBridgeController {
     });
   }
 
+  async #mute(outputID, how) {
+    const core = this.#ensureCore();
+    const transport = core.services.RoonApiTransport;
+
+    await new Promise((resolve, reject) => {
+      transport.mute(outputID, how, (error) => {
+        if (error) {
+          reject(new Error(error));
+          return;
+        }
+        resolve();
+      });
+    });
+  }
+
   async #fetchImage(params) {
     const core = this.#ensureCore();
     const imageService = core.services.RoonApiImage;
@@ -674,6 +922,21 @@ export class RoonBridgeController {
       imageKey,
       localURL
     };
+  }
+
+  async #playFromQueue(zoneOrOutputID, queueItemID) {
+    const core = this.#ensureCore();
+    const transport = core.services.RoonApiTransport;
+
+    await new Promise((resolve, reject) => {
+      transport.play_from_here(zoneOrOutputID, queueItemID, (message) => {
+        if (message && message.name && message.name !== "Success") {
+          reject(new Error(message.name));
+          return;
+        }
+        resolve();
+      });
+    });
   }
 
   async #contextActions({ hierarchy, itemKey, zoneOrOutputID }) {
@@ -752,6 +1015,78 @@ export class RoonBridgeController {
         resolve(response);
       });
     });
+  }
+
+  async #loadBrowseRootItems({ hierarchy, zoneOrOutputID, multiSessionKey }) {
+    await this.#browseRequest({
+      hierarchy,
+      zone_or_output_id: zoneOrOutputID ?? undefined,
+      pop_all: true,
+      ...(multiSessionKey ? { multi_session_key: multiSessionKey } : {})
+    });
+
+    const loaded = await this.#loadRequest({
+      hierarchy,
+      offset: 0,
+      count: 100,
+      set_display_offset: 0,
+      ...(multiSessionKey ? { multi_session_key: multiSessionKey } : {})
+    });
+
+    return loaded.items ?? [];
+  }
+
+  async #loadCurrentSessionItems({ hierarchy, multiSessionKey }) {
+    const loaded = await this.#loadRequest({
+      hierarchy,
+      offset: 0,
+      count: 100,
+      set_display_offset: 0,
+      ...(multiSessionKey ? { multi_session_key: multiSessionKey } : {})
+    });
+
+    return {
+      list: loaded.list ?? null,
+      items: loaded.items ?? []
+    };
+  }
+
+  async #singleExactMatchItem({ hierarchy, multiSessionKey, matchTitle }) {
+    const page = await this.#loadCurrentSessionItems({ hierarchy, multiSessionKey });
+    const candidates = (page.items ?? []).filter((item) => item?.item_key);
+    if (candidates.length !== 1) {
+      return null;
+    }
+
+    const candidate = candidates[0];
+    if (typeof candidate.title !== "string") {
+      return null;
+    }
+
+    if (candidate.title.localeCompare(matchTitle, undefined, { sensitivity: "accent" }) !== 0) {
+      return null;
+    }
+
+    return candidate;
+  }
+
+  async #activateBrowseResult({ hierarchy, result, zoneOrOutputID, requestHierarchy, multiSessionKey }) {
+    if (result.action === "message") {
+      throw new Error(result.message ?? "Browse request failed.");
+    }
+
+    if (result.action !== "list") {
+      throw new Error("Browse request did not produce a list.");
+    }
+
+    const offset = Math.max(result.list?.display_offset ?? 0, 0);
+    this.browseSessions.set(hierarchy, {
+      list: result.list,
+      selectedZoneID: zoneOrOutputID ?? null,
+      requestHierarchy,
+      multiSessionKey
+    });
+    await this.#loadBrowsePage(hierarchy, offset, 100);
   }
 
   async #resolveListForSession({ hierarchy, sessionKey, result, zoneOrOutputID }) {
@@ -880,5 +1215,24 @@ export class RoonBridgeController {
         }
       }
     }
+  }
+
+  #serviceItemsFromBrowseRoot(items) {
+    const excludedTitles = new Set([
+      "albums",
+      "artists",
+      "composers",
+      "genres",
+      "internet radio",
+      "library",
+      "my live radio",
+      "playlists",
+      "settings"
+    ]);
+
+    return items
+      .filter((item) => item?.item_key && typeof item.title === "string")
+      .filter((item) => excludedTitles.has(item.title.trim().toLowerCase()) === false)
+      .sort((left, right) => left.title.localeCompare(right.title, undefined, { sensitivity: "base" }));
   }
 }

@@ -22,10 +22,25 @@ struct DisconnectParams: Codable, Equatable, Sendable {}
 
 struct ZonesSubscribeParams: Codable, Equatable, Sendable {}
 
+struct QueueSubscribeParams: Codable, Equatable, Sendable {
+    var zoneOrOutputID: String
+    var maxItemCount: Int
+}
+
+struct QueuePlayFromHereParams: Codable, Equatable, Sendable {
+    var zoneOrOutputID: String
+    var queueItemID: String
+}
+
 struct BrowseOpenParams: Codable, Equatable, Sendable {
     var hierarchy: BrowseHierarchy
     var zoneOrOutputID: String?
     var itemKey: String?
+}
+
+struct BrowseOpenServiceParams: Codable, Equatable, Sendable {
+    var title: String
+    var zoneOrOutputID: String?
 }
 
 struct BrowseBackParams: Codable, Equatable, Sendable {
@@ -72,6 +87,13 @@ struct BrowsePerformActionParams: Codable, Equatable, Sendable {
     var actionTitle: String?
 }
 
+struct BrowseOpenSearchMatchParams: Codable, Equatable, Sendable {
+    var query: String
+    var categoryTitle: String
+    var matchTitle: String
+    var zoneOrOutputID: String?
+}
+
 enum TransportCommand: String, Codable, Equatable, Sendable {
     case playPause = "playpause"
     case play
@@ -92,6 +114,11 @@ enum VolumeChangeMode: String, Codable, Equatable, Sendable {
     case relativeStep = "relative_step"
 }
 
+enum OutputMuteMode: String, Codable, Equatable, Sendable {
+    case mute
+    case unmute
+}
+
 struct TransportSeekParams: Codable, Equatable, Sendable {
     var zoneOrOutputID: String
     var how: String
@@ -102,6 +129,11 @@ struct TransportVolumeParams: Codable, Equatable, Sendable {
     var outputID: String
     var how: VolumeChangeMode
     var value: Double
+}
+
+struct TransportMuteParams: Codable, Equatable, Sendable {
+    var outputID: String
+    var how: OutputMuteMode
 }
 
 struct ImageFetchParams: Codable, Equatable, Sendable {
@@ -208,6 +240,14 @@ struct ZonesChangedEvent: Codable, Equatable, Sendable {
     var zones: [ZoneSummary]
 }
 
+struct QueueSnapshotEvent: Codable, Equatable, Sendable {
+    var queue: QueueState?
+}
+
+struct QueueChangedEvent: Codable, Equatable, Sendable {
+    var queue: QueueState?
+}
+
 struct BrowseListChangedEvent: Codable, Equatable, Sendable {
     var page: BrowsePage
 }
@@ -220,6 +260,10 @@ struct BrowseItemReplacedEvent: Codable, Equatable, Sendable {
 struct BrowseItemRemovedEvent: Codable, Equatable, Sendable {
     var hierarchy: BrowseHierarchy
     var itemKey: String
+}
+
+struct BrowseServicesResult: Codable, Equatable, Sendable {
+    var services: [BrowseServiceSummary]
 }
 
 struct NowPlayingChangedEvent: Codable, Equatable, Sendable {
