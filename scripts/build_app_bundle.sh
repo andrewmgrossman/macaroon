@@ -19,6 +19,9 @@ APP_DIR="$ROOT_DIR/builds/${APP_NAME}.app"
 STAGING_DIR="$ROOT_DIR/builds/.${APP_NAME}.app.staging"
 EXECUTABLE_PATH="$BIN_DIR/$APP_NAME"
 RESOURCE_BUNDLE_PATH="$BIN_DIR/${APP_NAME}_Macaroon.bundle"
+APP_ICON_SOURCE="$ROOT_DIR/Sources/Macaroon/Resources/AppIcon.png"
+ICONSET_DIR="$ROOT_DIR/builds/.${APP_NAME}.iconset"
+ICON_NAME="AppIcon"
 
 if [[ ! -x "$EXECUTABLE_PATH" ]]; then
   echo "Missing executable at $EXECUTABLE_PATH" >&2
@@ -36,6 +39,20 @@ mkdir -p "$STAGING_DIR/Contents/MacOS" "$STAGING_DIR/Contents/Resources" "$ROOT_
 cp "$EXECUTABLE_PATH" "$STAGING_DIR/Contents/MacOS/$APP_NAME"
 cp -R "$RESOURCE_BUNDLE_PATH" "$STAGING_DIR/${APP_NAME}_Macaroon.bundle"
 
+if [[ -f "$APP_ICON_SOURCE" ]]; then
+  rm -rf "$ICONSET_DIR"
+  mkdir -p "$ICONSET_DIR"
+
+  for size in 16 32 128 256 512; do
+    sips -z "$size" "$size" "$APP_ICON_SOURCE" --out "$ICONSET_DIR/icon_${size}x${size}.png" >/dev/null
+    double_size=$((size * 2))
+    sips -z "$double_size" "$double_size" "$APP_ICON_SOURCE" --out "$ICONSET_DIR/icon_${size}x${size}@2x.png" >/dev/null
+  done
+
+  iconutil -c icns "$ICONSET_DIR" -o "$STAGING_DIR/Contents/Resources/${ICON_NAME}.icns"
+  rm -rf "$ICONSET_DIR"
+fi
+
 cat > "$STAGING_DIR/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -49,6 +66,8 @@ cat > "$STAGING_DIR/Contents/Info.plist" <<'PLIST'
   <string>com.andrewmg.macaroon</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
   <key>CFBundleName</key>
   <string>Macaroon</string>
   <key>CFBundlePackageType</key>
