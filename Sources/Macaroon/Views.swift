@@ -451,6 +451,8 @@ private struct BrowserView: View {
                     SearchResultsView(resultsPage: searchResultsPage)
                 } else if let albumContext = albumDetailContext(for: page) {
                     AlbumDetailView(context: albumContext)
+                } else if let playlistContext = playlistDetailContext(for: page) {
+                    PlaylistDetailView(context: playlistContext)
                 } else if let artistContext = artistDetailContext(for: page) {
                     ArtistDetailView(context: artistContext)
                 } else {
@@ -559,6 +561,20 @@ private struct BrowserView: View {
         }
 
         return ArtistDetailContext(
+            page: page,
+            playItem: playItem
+        )
+    }
+
+    private func playlistDetailContext(for page: BrowsePage) -> PlaylistDetailContext? {
+        guard let playItem = page.items.first,
+              playItem.title == "Play Playlist",
+              playItem.itemKey != nil
+        else {
+            return nil
+        }
+
+        return PlaylistDetailContext(
             page: page,
             playItem: playItem
         )
@@ -804,6 +820,11 @@ private struct ArtistDetailContext {
     var playItem: BrowseItem
 }
 
+private struct PlaylistDetailContext {
+    var page: BrowsePage
+    var playItem: BrowseItem
+}
+
 private struct BrowseRowSlot: View {
     @Environment(AppModel.self) private var model
     let index: Int
@@ -893,10 +914,6 @@ private struct AlbumDetailView: View {
                 }
 
                 VStack(alignment: .leading, spacing: 14) {
-                    Text("Tracks")
-                        .font(.system(size: 19, weight: .semibold))
-                        .foregroundStyle(.primary)
-
                     VStack(spacing: 0) {
                         ForEach(1..<context.page.list.count, id: \.self) { index in
                             if let track = model.browseItem(at: index) {
@@ -1033,6 +1050,103 @@ private struct ArtistDetailView: View {
     }
 
     private var albumCount: Int {
+        max(context.page.list.count - 1, 0)
+    }
+}
+
+private struct PlaylistDetailView: View {
+    @Environment(AppModel.self) private var model
+    let context: PlaylistDetailContext
+
+    var body: some View {
+        ResettableScrollContainer(identity: scrollIdentity) {
+            VStack(alignment: .leading, spacing: detailSectionSpacing) {
+                HStack(alignment: .top, spacing: 30) {
+                    ArtworkView(
+                        imageKey: context.page.list.imageKey,
+                        title: context.page.list.title,
+                        size: CGSize(width: detailHeaderArtworkSize, height: detailHeaderArtworkSize)
+                    )
+
+                    VStack(alignment: .leading, spacing: 0) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(context.page.list.title)
+                                .font(.system(size: 38, weight: .bold))
+                                .lineSpacing(1)
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            if let subtitle = context.page.list.subtitle,
+                               subtitle.isEmpty == false {
+                                Text(subtitle)
+                                    .font(.system(size: 24, weight: .medium))
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+
+                        if trackCount > 0 {
+                            Text(trackCount == 1 ? "1 track" : "\(trackCount) tracks")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(.tertiary)
+                                .padding(.top, 14)
+                        }
+
+                        DetailHeaderPlaybackControls(item: context.playItem)
+                            .padding(.top, 18)
+
+                        Spacer(minLength: 0)
+                    }
+                    .frame(maxWidth: 560, alignment: .topLeading)
+
+                    Spacer(minLength: 0)
+                }
+
+                VStack(alignment: .leading, spacing: 14) {
+                    VStack(spacing: 0) {
+                        ForEach(1..<context.page.list.count, id: \.self) { index in
+                            if let track = model.browseItem(at: index) {
+                                AlbumTrackRow(item: track) {
+                                    model.performPreferredAction(for: track, preferredActionTitles: ["Play Now"])
+                                }
+                                .onAppear {
+                                    model.ensureBrowseItemsLoaded(for: index)
+                                }
+                            } else {
+                                AlbumTrackRowPlaceholder()
+                                    .onAppear {
+                                        model.ensureBrowseItemsLoaded(for: index)
+                                    }
+                            }
+
+                            if index < context.page.list.count - 1 {
+                                Divider()
+                                    .padding(.leading, 58)
+                            }
+                        }
+                    }
+                }
+                .background(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(Color(nsColor: .controlBackgroundColor))
+                )
+            }
+            .padding(.horizontal, 28)
+            .padding(.top, 26)
+            .padding(.bottom, miniPlayerReservedHeight)
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var scrollIdentity: String {
+        [
+            context.page.hierarchy.rawValue,
+            context.page.list.title,
+            context.page.list.subtitle ?? "",
+            String(context.page.list.level)
+        ].joined(separator: "|")
+    }
+
+    private var trackCount: Int {
         max(context.page.list.count - 1, 0)
     }
 }
@@ -1280,42 +1394,129 @@ private struct DetailHeaderPlaybackControls: View {
     let item: BrowseItem
 
     var body: some View {
-        HStack(spacing: 10) {
-            Button {
+        SplitPlayActionPill(
+            enabled: item.itemKey != nil,
+            style: .large,
+            playAction: {
                 model.performPreferredAction(for: item, preferredActionTitles: ["Play Now"])
-            } label: {
+            }
+        ) {
+            Button("Play Now") {
+                model.performPreferredAction(for: item, preferredActionTitles: ["Play Now"])
+            }
+            Button("Add Next") {
+                model.performPreferredAction(for: item, preferredActionTitles: ["Add Next"])
+            }
+            Button("Queue") {
+                model.performPreferredAction(for: item, preferredActionTitles: ["Queue"])
+            }
+            Button("Start Radio") {
+                model.performPreferredAction(for: item, preferredActionTitles: ["Start Radio"])
+            }
+        }
+    }
+}
+
+private struct SplitPlayActionPill<MenuContent: View>: View {
+    enum Style {
+        case compact
+        case large
+    }
+
+    let enabled: Bool
+    var style: Style = .compact
+    let playAction: () -> Void
+    @ViewBuilder let menuContent: () -> MenuContent
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Button(action: playAction) {
                 Image(systemName: "play.fill")
-                    .font(.system(size: 20, weight: .bold))
-                    .frame(width: 44, height: 44)
-                    .background(
-                        Circle()
-                            .fill(Color.accentColor.opacity(0.14))
-                    )
+                    .font(.system(size: playIconSize, weight: .bold))
+                    .frame(width: leadingSegmentWidth, height: pillHeight)
             }
             .buttonStyle(.plain)
-            .disabled(item.itemKey == nil)
+            .disabled(!enabled)
+
+            Rectangle()
+                .fill(Color.white.opacity(0.28))
+                .frame(width: 1, height: dividerHeight)
 
             Menu {
-                Button("Play Now") {
-                    model.performPreferredAction(for: item, preferredActionTitles: ["Play Now"])
-                }
-                Button("Add Next") {
-                    model.performPreferredAction(for: item, preferredActionTitles: ["Add Next"])
-                }
-                Button("Queue") {
-                    model.performPreferredAction(for: item, preferredActionTitles: ["Queue"])
-                }
-                Button("Start Radio") {
-                    model.performPreferredAction(for: item, preferredActionTitles: ["Start Radio"])
-                }
+                menuContent()
             } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 16, weight: .bold))
-                    .frame(width: 34, height: 34)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: caretSize, weight: .bold))
+                    .frame(width: trailingSegmentWidth, height: pillHeight)
             }
             .menuStyle(.borderlessButton)
-            .disabled(item.itemKey == nil)
+            .menuIndicator(.hidden)
+            .disabled(!enabled)
         }
+        .foregroundStyle(enabled ? Color.white : Color.white.opacity(0.85))
+        .background(
+            Capsule(style: .continuous)
+                .fill(enabled ? pillFillColor : pillFillColor.opacity(0.45))
+        )
+        .compositingGroup()
+    }
+
+    private var pillHeight: CGFloat {
+        switch style {
+        case .compact:
+            34
+        case .large:
+            58
+        }
+    }
+
+    private var leadingSegmentWidth: CGFloat {
+        switch style {
+        case .compact:
+            34
+        case .large:
+            54
+        }
+    }
+
+    private var trailingSegmentWidth: CGFloat {
+        switch style {
+        case .compact:
+            42
+        case .large:
+            62
+        }
+    }
+
+    private var dividerHeight: CGFloat {
+        switch style {
+        case .compact:
+            18
+        case .large:
+            30
+        }
+    }
+
+    private var playIconSize: CGFloat {
+        switch style {
+        case .compact:
+            11
+        case .large:
+            18
+        }
+    }
+
+    private var caretSize: CGFloat {
+        switch style {
+        case .compact:
+            11
+        case .large:
+            14
+        }
+    }
+
+    private var pillFillColor: Color {
+        Color(nsColor: .systemGray)
     }
 }
 
@@ -1326,37 +1527,24 @@ private struct AlbumTrackRow: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            HStack(spacing: 4) {
-                Button {
+            SplitPlayActionPill(
+                enabled: item.itemKey != nil,
+                playAction: action
+            ) {
+                Button("Play Now") {
                     action()
-                } label: {
-                    Image(systemName: "play.fill")
-                        .font(.system(size: 10, weight: .bold))
-                        .frame(width: 24, height: 24)
                 }
-                .buttonStyle(.plain)
-                .disabled(item.itemKey == nil)
-
-                Menu {
-                    Button("Play Now", action: action)
-                    Button("Add Next") {
-                        model.performPreferredAction(for: item, preferredActionTitles: ["Add Next"])
-                    }
-                    Button("Queue") {
-                        model.performPreferredAction(for: item, preferredActionTitles: ["Queue"])
-                    }
-                    Button("Start Radio") {
-                        model.performPreferredAction(for: item, preferredActionTitles: ["Start Radio"])
-                    }
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .font(.system(size: 10, weight: .bold))
-                        .frame(width: 24, height: 24)
+                Button("Add Next") {
+                    model.performPreferredAction(for: item, preferredActionTitles: ["Add Next"])
                 }
-                .menuStyle(.borderlessButton)
-                .disabled(item.itemKey == nil)
+                Button("Queue") {
+                    model.performPreferredAction(for: item, preferredActionTitles: ["Queue"])
+                }
+                Button("Start Radio") {
+                    model.performPreferredAction(for: item, preferredActionTitles: ["Start Radio"])
+                }
             }
-            .frame(width: 48, alignment: .leading)
+            .frame(width: 102, alignment: .leading)
 
             Button(action: action) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -1410,7 +1598,7 @@ private struct AlbumTrackRowPlaceholder: View {
         HStack(spacing: 14) {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(Color(nsColor: .tertiarySystemFill))
-                .frame(width: 48, height: 24)
+                .frame(width: 102, height: 34)
 
             VStack(alignment: .leading, spacing: 8) {
                 RoundedRectangle(cornerRadius: 4, style: .continuous)
