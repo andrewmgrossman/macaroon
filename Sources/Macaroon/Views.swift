@@ -970,7 +970,7 @@ private struct ArtistDetailView: View {
                                 .lineSpacing(1)
                                 .fixedSize(horizontal: false, vertical: true)
 
-                            if let subtitle = context.page.list.subtitle,
+                            if let subtitle = displaySubtitle,
                                subtitle.isEmpty == false {
                                 Text(subtitle)
                                     .font(.system(size: 18, weight: .medium))
@@ -995,9 +995,6 @@ private struct ArtistDetailView: View {
 
                 if albumCount > 0 {
                     VStack(alignment: .leading, spacing: 14) {
-                        Text("Albums")
-                            .font(.system(size: 19, weight: .semibold))
-
                         LazyVGrid(
                             columns: [GridItem(.adaptive(minimum: 170, maximum: 210), spacing: 18)],
                             spacing: 18
@@ -1037,6 +1034,24 @@ private struct ArtistDetailView: View {
 
     private var albumCount: Int {
         max(context.page.list.count - 1, 0)
+    }
+
+    private var displaySubtitle: String? {
+        guard let subtitle = context.page.list.subtitle?.trimmingCharacters(in: .whitespacesAndNewlines),
+              subtitle.isEmpty == false
+        else {
+            return nil
+        }
+
+        let normalizedSubtitle = subtitle.lowercased()
+        let singular = "\(albumCount) album"
+        let plural = "\(albumCount) albums"
+
+        if normalizedSubtitle == singular || normalizedSubtitle == plural {
+            return nil
+        }
+
+        return subtitle
     }
 }
 
@@ -1148,11 +1163,11 @@ private struct SearchResultsView: View {
                     .font(.system(size: 30, weight: .semibold))
 
                 if let topHit = resultsPage.topHit {
-                    BrowserRow(item: topHit) {
-                        if topHit.inputPrompt == nil {
-                            model.openItem(topHit)
-                        }
-                    }
+                    SearchTopHitRow(
+                        query: resultsPage.query,
+                        item: topHit,
+                        category: topHitCategory(for: topHit)
+                    )
                 }
 
                 if resultsPage.sections.isEmpty {
@@ -1173,6 +1188,112 @@ private struct SearchResultsView: View {
             .padding(.bottom, 28)
         }
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private func topHitCategory(for item: BrowseItem) -> SearchResultsSectionKind? {
+        resultsPage.sections.first { section in
+            section.items.contains(where: { candidate in
+                candidate.id == item.id ||
+                    (candidate.title == item.title && candidate.subtitle == item.subtitle)
+            })
+        }?.kind
+    }
+}
+
+private struct SearchTopHitRow: View {
+    @Environment(AppModel.self) private var model
+    let query: String
+    let item: BrowseItem
+    let category: SearchResultsSectionKind?
+
+    var body: some View {
+        HStack(spacing: 14) {
+            if showsPlaybackControls {
+                SplitPlayActionPill(
+                    enabled: item.itemKey != nil,
+                    playAction: primaryPlayAction
+                ) {
+                    Button("Play Now", action: primaryPlayAction)
+                    Button("Add Next") {
+                        performSearchAction(["Add Next"])
+                    }
+                    Button("Queue") {
+                        performSearchAction(["Queue"])
+                    }
+                    Button("Start Radio") {
+                        performSearchAction(["Start Radio"])
+                    }
+                }
+                .frame(width: 76, alignment: .leading)
+            }
+
+            Button(action: openAction) {
+                HStack(spacing: 14) {
+                    ArtworkView(
+                        imageKey: item.imageKey,
+                        title: item.title,
+                        size: CGSize(width: 48, height: 48)
+                    )
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(item.title)
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(.primary)
+                        if let subtitle = item.subtitle, subtitle.isEmpty == false {
+                            Text(subtitle)
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+
+                    Spacer(minLength: 0)
+                }
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+    }
+
+    private var showsPlaybackControls: Bool {
+        category == .albums || category == .tracks
+    }
+
+    private func openAction() {
+        guard let category else {
+            if item.inputPrompt == nil {
+                model.openItem(item)
+            }
+            return
+        }
+
+        switch category {
+        case .tracks:
+            model.playSearchResult(query: query, category: .tracks, matchTitle: item.title)
+        case .artists, .albums, .composers, .works:
+            model.openSearchResult(query: query, category: category, matchTitle: item.title)
+        }
+    }
+
+    private func primaryPlayAction() {
+        performSearchAction(["Play Now"])
+    }
+
+    private func performSearchAction(_ preferredActionTitles: [String]) {
+        guard let category else {
+            return
+        }
+        model.playSearchResult(
+            query: query,
+            category: category,
+            matchTitle: item.title,
+            preferredActionTitles: preferredActionTitles
+        )
     }
 }
 
