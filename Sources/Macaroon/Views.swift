@@ -1626,7 +1626,7 @@ private struct SplitPlayActionPill<MenuContent: View>: View {
             .disabled(!enabled)
 
             Rectangle()
-                .fill(Color.white.opacity(0.28))
+                .fill(Color.white.opacity(0.34))
                 .frame(width: 1, height: dividerHeight)
 
             Menu {
@@ -1640,11 +1640,34 @@ private struct SplitPlayActionPill<MenuContent: View>: View {
             .menuIndicator(.hidden)
             .disabled(!enabled)
         }
-        .foregroundStyle(enabled ? Color.white : Color.white.opacity(0.85))
+        .foregroundStyle(enabled ? Color.white.opacity(0.96) : Color.white.opacity(0.72))
         .background(
             Capsule(style: .continuous)
-                .fill(enabled ? pillFillColor : pillFillColor.opacity(0.45))
+                .fill(.ultraThinMaterial)
+                .overlay {
+                    Capsule(style: .continuous)
+                        .fill(enabled ? glassTintColor : glassTintColor.opacity(0.45))
+                }
+                .overlay {
+                    Capsule(style: .continuous)
+                        .strokeBorder(Color.white.opacity(enabled ? 0.34 : 0.18), lineWidth: 0.8)
+                }
+                .overlay(alignment: .top) {
+                    Capsule(style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    Color.white.opacity(enabled ? 0.22 : 0.1),
+                                    Color.white.opacity(0.02)
+                                ],
+                                startPoint: .top,
+                                endPoint: .center
+                            )
+                        )
+                        .padding(1)
+                }
         )
+        .shadow(color: Color.black.opacity(enabled ? 0.12 : 0.05), radius: 10, x: 0, y: 5)
         .compositingGroup()
     }
 
@@ -1669,9 +1692,9 @@ private struct SplitPlayActionPill<MenuContent: View>: View {
     private var trailingSegmentWidth: CGFloat {
         switch style {
         case .compact:
-            42
+            50
         case .large:
-            62
+            76
         }
     }
 
@@ -1696,14 +1719,14 @@ private struct SplitPlayActionPill<MenuContent: View>: View {
     private var caretSize: CGFloat {
         switch style {
         case .compact:
-            11
+            12
         case .large:
-            14
+            16
         }
     }
 
-    private var pillFillColor: Color {
-        Color(nsColor: .systemGray)
+    private var glassTintColor: Color {
+        Color(nsColor: .systemGray).opacity(0.58)
     }
 }
 
