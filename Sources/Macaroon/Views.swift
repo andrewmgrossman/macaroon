@@ -169,6 +169,9 @@ struct RootView: View {
                 clearToolbarSearchFocus()
             }
         )
+        .onChange(of: model.dismissTransientUIRequestID) { _, _ in
+            clearToolbarSearchFocus()
+        }
         .toolbar {
             ToolbarItemGroup(placement: .navigation) {
                 Button {
@@ -225,6 +228,7 @@ private struct AutofillDisabledTextField: NSViewRepresentable {
     @Binding var text: String
     var placeholder: String
     var onSubmit: (() -> Void)? = nil
+    var focusRequestID: Int = 0
 
     func makeCoordinator() -> Coordinator {
         Coordinator(parent: self)
@@ -255,6 +259,12 @@ private struct AutofillDisabledTextField: NSViewRepresentable {
             nsView.placeholderString = placeholder
         }
         nsView.configureForPlainInput()
+        if nsView.lastAppliedFocusRequestID != focusRequestID {
+            nsView.lastAppliedFocusRequestID = focusRequestID
+            DispatchQueue.main.async {
+                nsView.window?.makeFirstResponder(nsView)
+            }
+        }
         context.coordinator.parent = self
     }
 
@@ -291,6 +301,8 @@ private struct AutofillDisabledTextField: NSViewRepresentable {
 }
 
 private final class NonAutofillTextField: NSTextField {
+    var lastAppliedFocusRequestID = 0
+
     override func becomeFirstResponder() -> Bool {
         let becameFirstResponder = super.becomeFirstResponder()
         configureForPlainInput()
@@ -1203,7 +1215,8 @@ private struct SearchToolbarField: View {
                 placeholder: "Search Library",
                 onSubmit: {
                     model.runSearch()
-                }
+                },
+                focusRequestID: model.searchFocusRequestID
             )
                 .frame(width: 220)
 

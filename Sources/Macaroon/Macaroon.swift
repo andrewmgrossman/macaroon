@@ -6,6 +6,7 @@ final class MacaroonAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
+        NSWindow.allowsAutomaticWindowTabbing = false
         if let iconURL = Bundle.module.url(forResource: "AppIcon", withExtension: "png"),
            let iconImage = NSImage(contentsOf: iconURL) {
             NSApp.applicationIconImage = iconImage
@@ -35,22 +36,51 @@ struct Macaroon: App {
         .defaultSize(width: 1280, height: 820)
         .windowToolbarStyle(.unified(showsTitle: false))
         .commands {
-            CommandMenu("Server") {
-                Button("Reconnect") {
-                    appModel.connectAutomatically()
+            CommandMenu("Navigate") {
+                Button("Search Library") {
+                    appModel.requestSearchFocus()
                 }
-                .keyboardShortcut("r", modifiers: [.command, .shift])
+                .keyboardShortcut("f", modifiers: [.command])
 
-                Button("Disconnect") {
-                    appModel.disconnect()
+                Button("Back") {
+                    appModel.goBack()
                 }
-                .disabled(appModel.connectionStatus == .disconnected)
+                .keyboardShortcut("[", modifiers: [.command])
 
-                Divider()
-
-                Button("Server Settings…") {
-                    appModel.openSettings()
+                Button("Forward") {
+                    appModel.goForward()
                 }
+                .keyboardShortcut("]", modifiers: [.command])
+                .disabled(appModel.canGoForward == false)
+            }
+
+            CommandMenu("Playback") {
+                Button("Play/Pause") {
+                    appModel.transport(.playPause)
+                }
+                .keyboardShortcut(.space, modifiers: [])
+
+                Button("Previous") {
+                    appModel.transport(.previous)
+                }
+                .keyboardShortcut(.leftArrow, modifiers: [.command])
+
+                Button("Next") {
+                    appModel.transport(.next)
+                }
+                .keyboardShortcut(.rightArrow, modifiers: [.command])
+            }
+
+            CommandGroup(after: .toolbar) {
+                Button(appModel.isQueueSidebarVisible ? "Hide Queue" : "Show Queue") {
+                    appModel.toggleQueueSidebar()
+                }
+                .keyboardShortcut("q", modifiers: [.command, .option])
+
+                Button("Dismiss") {
+                    appModel.dismissTransientUI()
+                }
+                .keyboardShortcut(.escape, modifiers: [])
             }
 
             CommandGroup(replacing: .appTermination) {

@@ -80,6 +80,8 @@ final class AppModel {
     var searchResultsPage: SearchResultsPage?
     var artworkCacheUsageBytes = 0
     var artworkCacheLimitBytes: Int
+    var searchFocusRequestID = 0
+    var dismissTransientUIRequestID = 0
 
     var artworkCacheUsageDisplay: String {
         Self.byteCountFormatter.string(fromByteCount: Int64(artworkCacheUsageBytes))
@@ -635,6 +637,20 @@ final class AppModel {
 
     func openSettings() {
         NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+    }
+
+    func requestSearchFocus() {
+        searchFocusRequestID += 1
+    }
+
+    func dismissTransientUI() {
+        if isQueueSidebarVisible {
+            isQueueSidebarVisible = false
+        }
+        if errorState != nil {
+            errorState = nil
+        }
+        dismissTransientUIRequestID += 1
     }
 
     func submitPrompt(for item: BrowseItem, value: String) {
