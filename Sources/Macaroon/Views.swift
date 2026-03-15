@@ -1624,6 +1624,7 @@ private struct SplitPlayActionPill<MenuContent: View>: View {
             }
             .buttonStyle(.plain)
             .disabled(!enabled)
+            .frame(width: leadingSegmentWidth, height: pillHeight)
 
             Rectangle()
                 .fill(Color.white.opacity(0.34))
@@ -1639,7 +1640,10 @@ private struct SplitPlayActionPill<MenuContent: View>: View {
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .disabled(!enabled)
+            .frame(width: trailingSegmentWidth, height: pillHeight)
         }
+        .frame(width: totalWidth, height: pillHeight)
+        .fixedSize()
         .foregroundStyle(enabled ? Color.white.opacity(0.96) : Color.white.opacity(0.72))
         .background(
             Capsule(style: .continuous)
@@ -1692,9 +1696,9 @@ private struct SplitPlayActionPill<MenuContent: View>: View {
     private var trailingSegmentWidth: CGFloat {
         switch style {
         case .compact:
-            50
+            38
         case .large:
-            76
+            52
         }
     }
 
@@ -1727,6 +1731,10 @@ private struct SplitPlayActionPill<MenuContent: View>: View {
 
     private var glassTintColor: Color {
         Color(nsColor: .systemGray).opacity(0.58)
+    }
+
+    private var totalWidth: CGFloat {
+        leadingSegmentWidth + 1 + trailingSegmentWidth
     }
 }
 
