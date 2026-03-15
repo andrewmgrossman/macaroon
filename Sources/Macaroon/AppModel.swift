@@ -441,7 +441,9 @@ final class AppModel {
                     zoneOrOutputID: selectedZoneID
                 )
             } catch {
-                errorState = ErrorState(title: "Playback Action Failed", message: error.localizedDescription)
+                if await recoverFromStaleBrowseItemError(error) == false {
+                    errorState = ErrorState(title: "Playback Action Failed", message: error.localizedDescription)
+                }
             }
         }
     }
@@ -624,13 +626,17 @@ final class AppModel {
                             contextItemKey: nil,
                             actionTitle: nil
                         )
-                        return
+                            return
                     } catch {
-                        errorState = ErrorState(title: "Playback Action Failed", message: error.localizedDescription)
+                        if await recoverFromStaleBrowseItemError(error) == false {
+                            errorState = ErrorState(title: "Playback Action Failed", message: error.localizedDescription)
+                        }
                         return
                     }
                 }
-                errorState = ErrorState(title: "Playback Action Failed", message: error.localizedDescription)
+                if await recoverFromStaleBrowseItemError(error) == false {
+                    errorState = ErrorState(title: "Playback Action Failed", message: error.localizedDescription)
+                }
             }
         }
     }
@@ -1492,7 +1498,9 @@ final class AppModel {
                     )
                     commitNavigation(action, historyMode: historyMode)
                 } catch {
-                    errorState = ErrorState(title: "Browse Item Failed", message: error.localizedDescription)
+                    if await recoverFromStaleBrowseItemError(error) == false {
+                        errorState = ErrorState(title: "Browse Item Failed", message: error.localizedDescription)
+                    }
                 }
             }
         case let .openBrowseService(title):
@@ -1548,11 +1556,54 @@ final class AppModel {
                     )
                     commitNavigation(action, historyMode: historyMode)
                 } catch {
-                    let title = categoryTitle == "Artists" ? "Artist Navigation Failed" : "Album Navigation Failed"
-                    errorState = ErrorState(title: title, message: error.localizedDescription)
+                    if await recoverFromStaleBrowseItemError(error) == false {
+                        let title = categoryTitle == "Artists" ? "Artist Navigation Failed" : "Album Navigation Failed"
+                        errorState = ErrorState(title: title, message: error.localizedDescription)
+                    }
                 }
             }
         }
+    }
+
+    private func recoverFromStaleBrowseItemError(_ error: Error) async -> Bool {
+        guard isStaleBrowseItemError(error) else {
+            return false
+        }
+
+        MacaroonDebugLogger.logApp(
+            "app.recover_stale_browse_item",
+            details: [
+                "hierarchy": selectedHierarchy.rawValue,
+                "message": error.localizedDescription
+            ]
+        )
+
+        do {
+            let trimmedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if selectedHierarchy == .search,
+               trimmedSearch.isEmpty == false {
+                let query = trimmedSearch
+                pendingSearchQuery = query
+                searchResultsPage = nil
+                searchRootBrowsePage = nil
+                try await sessionController?.browseHome(hierarchy: .search, zoneOrOutputID: selectedZoneID)
+            } else if let selectedBrowseServiceTitle, selectedHierarchy == .browse {
+                try await sessionController?.browseOpenService(title: selectedBrowseServiceTitle, zoneOrOutputID: selectedZoneID)
+            } else {
+                try await sessionController?.browseRefresh(hierarchy: selectedHierarchy, zoneOrOutputID: selectedZoneID)
+            }
+            return true
+        } catch {
+            MacaroonDebugLogger.logError("stale_browse_recovery.failed", error: error)
+            return false
+        }
+    }
+
+    private func isStaleBrowseItemError(_ error: Error) -> Bool {
+        let message = error.localizedDescription.lowercased()
+        return message.contains("invaliditemkey") ||
+            message.contains("invalid item key") ||
+            message.contains("no action list available for the selected item")
     }
 
     private func commitNavigation(_ action: BrowseNavigationAction, historyMode: HistoryMode) {

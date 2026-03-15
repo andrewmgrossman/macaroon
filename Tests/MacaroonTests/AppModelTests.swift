@@ -144,6 +144,55 @@ struct AppModelTests {
         #expect(stats.entryCount == 0)
         #expect(stats.totalBytes == 0)
     }
+
+    @Test
+    func performPreferredActionRecoversQuietlyFromStaleBrowseItem() async throws {
+        let controller = RecordingSessionController()
+        controller.contextActionsError = staleItemError()
+        let model = AppModel(sessionControllerFactory: { controller })
+        model.start()
+        await Task.yield()
+
+        model.selectedHierarchy = .albums
+        model.selectedZoneID = "zone-1"
+        model.performPreferredAction(
+            for: BrowseItem(
+                title: "Sea Change",
+                subtitle: "Beck",
+                imageKey: nil,
+                itemKey: "484:5",
+                hint: "action_list",
+                inputPrompt: nil
+            ),
+            preferredActionTitles: ["Play Now"]
+        )
+
+        await Task.yield()
+        await Task.yield()
+
+        #expect(controller.browseRefreshCalls == [.init(hierarchy: .albums, zoneOrOutputID: "zone-1")])
+        #expect(model.errorState == nil)
+    }
+
+    @Test
+    func playSearchResultRecoversByRestartingSearchOnStaleItem() async throws {
+        let controller = RecordingSessionController()
+        controller.performSearchMatchActionError = staleItemError()
+        let model = AppModel(sessionControllerFactory: { controller })
+        model.start()
+        await Task.yield()
+
+        model.selectedHierarchy = .search
+        model.selectedZoneID = "zone-1"
+        model.searchText = "beck"
+        model.playSearchResult(query: "beck", category: .albums, matchTitle: "Sea Change")
+
+        await Task.yield()
+        await Task.yield()
+
+        #expect(controller.browseHomeCalls == [.init(hierarchy: .search, zoneOrOutputID: "zone-1")])
+        #expect(model.errorState == nil)
+    }
 }
 
 @MainActor
@@ -157,11 +206,31 @@ private final class RecordingSessionController: RoonSessionController {
         var actionTitle: String?
     }
 
+    struct BrowseHomeCall: Equatable {
+        var hierarchy: BrowseHierarchy
+        var zoneOrOutputID: String?
+    }
+
+    struct BrowseRefreshCall: Equatable {
+        var hierarchy: BrowseHierarchy
+        var zoneOrOutputID: String?
+    }
+
+    struct BrowseOpenServiceCall: Equatable {
+        var title: String
+        var zoneOrOutputID: String?
+    }
+
     typealias ImageFetcher = @MainActor @Sendable (String, Int, Int, String) async throws -> ImageFetchedResult
 
     var eventHandler: (@MainActor (RoonSessionEvent) -> Void)?
     var contextActionsCalls: [(BrowseHierarchy, String, String?)] = []
     var performActionCalls: [PerformActionCall] = []
+    var browseHomeCalls: [BrowseHomeCall] = []
+    var browseRefreshCalls: [BrowseRefreshCall] = []
+    var browseOpenServiceCalls: [BrowseOpenServiceCall] = []
+    var contextActionsError: Error?
+    var performSearchMatchActionError: Error?
     private let imageFetcher: ImageFetcher?
 
     init(imageFetcher: ImageFetcher? = nil) {
@@ -176,11 +245,17 @@ private final class RecordingSessionController: RoonSessionController {
     func subscribeZones() async throws {}
     func subscribeQueue(zoneOrOutputID: String, maxItemCount: Int) async throws {}
     func queuePlayFromHere(zoneOrOutputID: String, queueItemID: String) async throws {}
-    func browseHome(hierarchy: BrowseHierarchy, zoneOrOutputID: String?) async throws {}
+    func browseHome(hierarchy: BrowseHierarchy, zoneOrOutputID: String?) async throws {
+        browseHomeCalls.append(.init(hierarchy: hierarchy, zoneOrOutputID: zoneOrOutputID))
+    }
     func browseOpen(hierarchy: BrowseHierarchy, zoneOrOutputID: String?, itemKey: String?) async throws {}
-    func browseOpenService(title: String, zoneOrOutputID: String?) async throws {}
+    func browseOpenService(title: String, zoneOrOutputID: String?) async throws {
+        browseOpenServiceCalls.append(.init(title: title, zoneOrOutputID: zoneOrOutputID))
+    }
     func browseBack(hierarchy: BrowseHierarchy, levels: Int, zoneOrOutputID: String?) async throws {}
-    func browseRefresh(hierarchy: BrowseHierarchy, zoneOrOutputID: String?) async throws {}
+    func browseRefresh(hierarchy: BrowseHierarchy, zoneOrOutputID: String?) async throws {
+        browseRefreshCalls.append(.init(hierarchy: hierarchy, zoneOrOutputID: zoneOrOutputID))
+    }
     func browseLoadPage(hierarchy: BrowseHierarchy, offset: Int, count: Int) async throws {}
     func browseSubmitInput(hierarchy: BrowseHierarchy, itemKey: String, input: String, zoneOrOutputID: String?) async throws {}
     func browseOpenSearchMatch(query: String, categoryTitle: String, matchTitle: String, zoneOrOutputID: String?) async throws {}
@@ -191,6 +266,9 @@ private final class RecordingSessionController: RoonSessionController {
 
     func browseContextActions(hierarchy: BrowseHierarchy, itemKey: String, zoneOrOutputID: String?) async throws -> BrowseActionMenuResult {
         contextActionsCalls.append((hierarchy, itemKey, zoneOrOutputID))
+        if let contextActionsError {
+            throw contextActionsError
+        }
         throw NSError(domain: "RecordingSessionController", code: 1)
     }
 
@@ -218,7 +296,11 @@ private final class RecordingSessionController: RoonSessionController {
         matchTitle: String,
         preferredActionTitles: [String],
         zoneOrOutputID: String?
-    ) async throws {}
+    ) async throws {
+        if let performSearchMatchActionError {
+            throw performSearchMatchActionError
+        }
+    }
 
     func transportCommand(zoneOrOutputID: String, command: TransportCommand) async throws {}
     func transportSeek(zoneOrOutputID: String, how: String, seconds: Double) async throws {}
@@ -231,6 +313,10 @@ private final class RecordingSessionController: RoonSessionController {
         }
         return try await imageFetcher(imageKey, width, height, format)
     }
+}
+
+private func staleItemError() -> NSError {
+    NSError(domain: "Roon", code: 500, userInfo: [NSLocalizedDescriptionKey: "InvalidItemKey"])
 }
 
 private func makeJPEGData() -> Data {
