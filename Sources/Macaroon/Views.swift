@@ -5,6 +5,7 @@ private let browseRowHeight: CGFloat = 84
 private let browseGridArtworkSize: CGFloat = 172
 private let browseGridCardHeight: CGFloat = 286
 private let miniPlayerReservedHeight: CGFloat = 118
+private let miniPlayerArtworkSize: CGFloat = 56
 private let detailHeaderArtworkSize: CGFloat = 220
 private let detailSectionSpacing: CGFloat = 26
 
@@ -1512,61 +1513,62 @@ private struct MiniPlayerBar: View {
         VStack(spacing: 0) {
             Divider()
 
-            HStack(spacing: 20) {
+            HStack(spacing: 24) {
                 if let nowPlaying = model.selectedZone?.nowPlaying {
-                    HStack(spacing: 14) {
+                    HStack(spacing: 16) {
                         Button {
                             model.openNowPlayingAlbum()
                         } label: {
                             ArtworkView(
                                 imageKey: nowPlaying.imageKey,
                                 title: nowPlaying.title,
-                                size: CGSize(width: 52, height: 52)
+                                size: CGSize(width: miniPlayerArtworkSize, height: miniPlayerArtworkSize)
                             )
                         }
                         .buttonStyle(.plain)
                         .disabled((nowPlaying.detail ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
-                        VStack(alignment: .leading, spacing: 3) {
+                        VStack(alignment: .leading, spacing: 4) {
                             Text(nowPlaying.title)
-                                .font(.system(size: 13, weight: .semibold))
+                                .font(.system(size: 14, weight: .semibold))
                                 .lineLimit(1)
                             if let subtitle = nowPlaying.subtitle, subtitle.isEmpty == false {
                                 Button {
                                     model.openNowPlayingArtist()
                                 } label: {
                                     Text(subtitle)
-                                        .font(.system(size: 12))
+                                        .font(.system(size: 12, weight: .medium))
                                         .foregroundStyle(.secondary)
                                         .lineLimit(1)
                                 }
                                 .buttonStyle(.plain)
                             } else {
                                 Text(nowPlaying.detail ?? " ")
-                                    .font(.system(size: 12))
+                                    .font(.system(size: 12, weight: .medium))
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)
                             }
                             Text(model.selectedZone?.state.capitalized ?? " ")
-                                .font(.caption)
+                                .font(.system(size: 11, weight: .medium))
+                                .textCase(.uppercase)
+                                .tracking(0.4)
                                 .foregroundStyle(.tertiary)
                         }
-                        .frame(width: 220, alignment: .leading)
+                        .frame(width: 240, alignment: .leading)
                     }
                 } else {
                     Label("Nothing Playing", systemImage: "music.note")
                         .foregroundStyle(.secondary)
-                        .frame(width: 286, alignment: .leading)
+                        .frame(width: 312, alignment: .leading)
                 }
 
-                Spacer(minLength: 24)
+                Spacer(minLength: 12)
 
                 MiniPlayerTransportSection()
 
-                Spacer(minLength: 24)
+                Spacer(minLength: 12)
 
-                HStack(spacing: 12) {
-                    VStack(alignment: .trailing, spacing: 10) {
+                VStack(alignment: .trailing, spacing: 10) {
                     Picker("Zone", selection: Binding(
                         get: { model.selectedZoneID ?? "" },
                         set: { zoneID in
@@ -1577,18 +1579,28 @@ private struct MiniPlayerBar: View {
                                 Text(zone.displayName).tag(zone.zoneID)
                             }
                         }
-                        .labelsHidden()
-                        .pickerStyle(.menu)
-                        .frame(width: 200)
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: 214)
 
-                        MiniPlayerVolumeControl()
-                            .frame(width: 200, alignment: .trailing)
-                    }
+                    MiniPlayerVolumeControl()
+                        .frame(width: 214, alignment: .trailing)
                 }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(Color(nsColor: .controlBackgroundColor).opacity(0.75))
+                )
             }
+            .frame(height: miniPlayerReservedHeight)
             .padding(.horizontal, 18)
-            .padding(.vertical, 12)
-            .background(.regularMaterial)
+            .background(.ultraThinMaterial)
+            .overlay(alignment: .top) {
+                Rectangle()
+                    .fill(Color.white.opacity(0.12))
+                    .frame(height: 1)
+            }
         }
     }
 }
@@ -1729,17 +1741,18 @@ private struct MiniPlayerTransportSection: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        VStack(spacing: 2) {
+        VStack(spacing: 7) {
             MiniPlayerProgressSection()
 
-            HStack(spacing: 14) {
+            HStack(spacing: 16) {
                 MiniPlayerButton(systemName: "backward.fill", enabled: model.selectedZone?.capabilities.canPrevious == true) {
                     model.transport(.previous)
                 }
                 MiniPlayerButton(
                     systemName: "playpause.fill",
                     enabled: (model.selectedZone?.capabilities.canPlayPause == true) ||
-                        ((model.selectedZone?.capabilities.canPlay == true) && (model.selectedZone?.capabilities.canPause == true))
+                        ((model.selectedZone?.capabilities.canPlay == true) && (model.selectedZone?.capabilities.canPause == true)),
+                    prominence: .primary
                 ) {
                     model.transport(.playPause)
                 }
@@ -1747,8 +1760,14 @@ private struct MiniPlayerTransportSection: View {
                     model.transport(.next)
                 }
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(Color(nsColor: .controlBackgroundColor).opacity(0.82))
+            )
         }
-        .frame(width: 460)
+        .frame(width: 500)
     }
 }
 
@@ -1759,7 +1778,7 @@ private struct MiniPlayerProgressSection: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
-            VStack(spacing: 2) {
+            VStack(spacing: 3) {
                 Slider(
                     value: Binding(
                         get: {
@@ -1781,13 +1800,15 @@ private struct MiniPlayerProgressSection: View {
                     }
                 )
                 .disabled(model.selectedZone?.capabilities.canSeek != true || trackLength <= 0)
+                .controlSize(.small)
 
                 HStack {
                     Text(formatTime(isScrubbing ? scrubValue : resolvedSeekPosition(at: context.date)))
                     Spacer()
                     Text(formatTime(trackLength))
                 }
-                .font(.caption2)
+                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .monospacedDigit()
                 .foregroundStyle(.secondary)
             }
             .onAppear {
@@ -1860,6 +1881,7 @@ private struct MiniPlayerVolumeControl: View {
                         }
                     )
                     .frame(width: 150)
+                    .controlSize(.small)
                 }
                 .onAppear {
                     volumeValue = volume.value ?? volume.min ?? 0
@@ -1901,8 +1923,13 @@ private struct MiniPlayerVolumeControl: View {
             model.toggleMute()
         } label: {
             Image(systemName: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                .font(.system(size: 12))
-                .foregroundStyle(isMuted ? .primary : .secondary)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(isMuted ? Color.primary : Color.secondary)
+                .frame(width: 26, height: 26)
+                .background(
+                    Circle()
+                        .fill(isMuted ? Color.primary.opacity(0.12) : Color.clear)
+                )
         }
         .buttonStyle(.plain)
         .accessibilityLabel(isMuted ? "Unmute" : "Mute")
@@ -2391,20 +2418,51 @@ private struct ArtworkView: View {
 }
 
 private struct MiniPlayerButton: View {
+    enum Prominence {
+        case standard
+        case primary
+    }
+
     let systemName: String
     let enabled: Bool
+    var prominence: Prominence = .standard
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             Image(systemName: systemName)
-                .font(.system(size: 14, weight: .semibold))
-                .frame(width: 30, height: 30)
+                .font(.system(size: prominence == .primary ? 15 : 13, weight: .semibold))
+                .frame(
+                    width: prominence == .primary ? 40 : 30,
+                    height: prominence == .primary ? 40 : 30
+                )
+                .background(backgroundShape)
         }
         .buttonStyle(.plain)
-        .foregroundStyle(enabled ? Color.primary : Color.secondary)
+        .foregroundStyle(foregroundColor)
         .opacity(enabled ? 1 : 0.45)
         .disabled(!enabled)
+    }
+
+    private var foregroundColor: Color {
+        switch prominence {
+        case .primary:
+            return enabled ? Color.white : Color.white.opacity(0.85)
+        case .standard:
+            return enabled ? Color.primary : Color.secondary
+        }
+    }
+
+    @ViewBuilder
+    private var backgroundShape: some View {
+        switch prominence {
+        case .primary:
+            Circle()
+                .fill(enabled ? Color.accentColor : Color.accentColor.opacity(0.45))
+        case .standard:
+            Circle()
+                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.9))
+        }
     }
 }
 
