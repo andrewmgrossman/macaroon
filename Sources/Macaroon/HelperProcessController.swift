@@ -355,6 +355,28 @@ final class MockBridgeService: BridgeService {
             if let typed = EmptyResult() as? Result {
                 return typed
             }
+        case "browse.searchSections":
+            let result = SearchResultsPage(
+                query: "mock",
+                topHit: BrowseItem(title: "Mock Artist", subtitle: "Top Result", imageKey: nil, itemKey: "mock-top-hit", hint: "list", inputPrompt: nil),
+                sections: [
+                    SearchResultsSection(
+                        kind: .artists,
+                        items: [
+                            BrowseItem(title: "Mock Artist", subtitle: "2 albums", imageKey: nil, itemKey: "mock-artist", hint: "list", inputPrompt: nil)
+                        ]
+                    ),
+                    SearchResultsSection(
+                        kind: .tracks,
+                        items: [
+                            BrowseItem(title: "Mock Song", subtitle: "Mock Artist", imageKey: nil, itemKey: "mock-track", hint: "action", inputPrompt: nil, detail: nil, length: 244)
+                        ]
+                    )
+                ]
+            )
+            if let typed = result as? Result {
+                return typed
+            }
         case "image.fetch":
             let result = ImageFetchedResult(imageKey: "mock-image", localURL: "/tmp/mock-image.jpg")
             if let typed = result as? Result {
@@ -373,6 +395,10 @@ final class MockBridgeService: BridgeService {
                 return typed
             }
         case "browse.performAction":
+            if let typed = EmptyResult() as? Result {
+                return typed
+            }
+        case "browse.performSearchMatchAction":
             if let typed = EmptyResult() as? Result {
                 return typed
             }

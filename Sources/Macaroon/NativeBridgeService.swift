@@ -237,6 +237,19 @@ final class NativeRoonBridgeService: BridgeService {
                 contextItemKey: params.contextItemKey,
                 actionTitle: params.actionTitle
             )
+        case "browse.performSearchMatchAction":
+            guard let params = params as? BrowsePerformSearchMatchActionParams,
+                  let session = await registryClient.activeSession() else {
+                return
+            }
+            try await browseClient.performSearchMatchAction(
+                session: session,
+                query: params.query,
+                categoryTitle: params.categoryTitle,
+                matchTitle: params.matchTitle,
+                preferredActionTitles: params.preferredActionTitles,
+                zoneOrOutputID: params.zoneOrOutputID
+            )
         case "queue.playFromHere":
             guard let params = params as? QueuePlayFromHereParams,
                   let session = await registryClient.activeSession() else {
@@ -317,6 +330,17 @@ final class NativeRoonBridgeService: BridgeService {
             let result = try await browseClient.browseServices(session: session)
             let bridged = BrowseServicesResult(services: result.services)
             return bridged as! Result
+        case "browse.searchSections":
+            guard let params = params as? BrowseSearchSectionsParams,
+                  let session = await registryClient.activeSession() else {
+                return SearchResultsPage(query: "", topHit: nil, sections: []) as! Result
+            }
+            let result = try await browseClient.searchSections(
+                session: session,
+                query: params.query,
+                zoneOrOutputID: params.zoneOrOutputID
+            )
+            return result as! Result
         case "browse.contextActions":
             guard let params = params as? BrowseContextActionsParams,
                   let session = await registryClient.activeSession() else {

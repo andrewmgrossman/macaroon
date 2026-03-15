@@ -400,6 +400,177 @@ actor NativeBrowseClient {
         )
     }
 
+    func searchSections(
+        session: NativeMooSession,
+        query: String,
+        zoneOrOutputID: String?
+    ) async throws -> SearchResultsPage {
+        let previousSearchState = sessions[.search]
+        defer { sessions[.search] = previousSearchState }
+
+        let context = NativeBrowseSessionContext(
+            requestHierarchy: "browse",
+            multiSessionKey: "macaroon-search-results"
+        )
+        let resultsPage = try await prepareSearchResultsSession(
+            session: session,
+            query: query,
+            zoneOrOutputID: zoneOrOutputID,
+            context: context
+        )
+
+        sessions[.search] = NativeBrowseState(
+            list: resultsPage.list,
+            selectedZoneID: zoneOrOutputID,
+            requestHierarchy: context.requestHierarchy,
+            multiSessionKey: context.multiSessionKey
+        )
+
+        var sections: [SearchResultsSection] = []
+        for kind in SearchResultsSectionKind.allCases {
+            guard let categoryItemKey = (resultsPage.items ?? []).first(where: {
+                $0.item_key != nil &&
+                $0.title.localizedCaseInsensitiveCompare(kind.title) == .orderedSame
+            })?.item_key else {
+                continue
+            }
+
+            _ = try await browseRequest(
+                session: session,
+                options: NativeBrowseRequest(
+                    hierarchy: context.requestHierarchy,
+                    multi_session_key: context.multiSessionKey,
+                    item_key: categoryItemKey,
+                    input: nil,
+                    zone_or_output_id: zoneOrOutputID,
+                    pop_all: nil,
+                    pop_levels: nil,
+                    refresh_list: nil
+                )
+            )
+
+            let categoryPage = try await loadAllCurrentSessionItems(
+                session: session,
+                hierarchy: context.requestHierarchy,
+                multiSessionKey: context.multiSessionKey
+            )
+
+            let items = (categoryPage.items ?? []).map(toBrowseItem)
+            if items.isEmpty == false {
+                sections.append(SearchResultsSection(kind: kind, items: items))
+            }
+
+            _ = try? await browseRequest(
+                session: session,
+                options: NativeBrowseRequest(
+                    hierarchy: context.requestHierarchy,
+                    multi_session_key: context.multiSessionKey,
+                    item_key: nil,
+                    input: nil,
+                    zone_or_output_id: nil,
+                    pop_all: nil,
+                    pop_levels: 1,
+                    refresh_list: nil
+                )
+            )
+        }
+
+        return SearchResultsPage(
+            query: query,
+            topHit: (resultsPage.items ?? []).first.map(toBrowseItem),
+            sections: sections
+        )
+    }
+
+    func performSearchMatchAction(
+        session: NativeMooSession,
+        query: String,
+        categoryTitle: String,
+        matchTitle: String,
+        preferredActionTitles: [String],
+        zoneOrOutputID: String?
+    ) async throws {
+        let previousSearchState = sessions[.search]
+        defer { sessions[.search] = previousSearchState }
+
+        let context = NativeBrowseSessionContext(
+            requestHierarchy: "browse",
+            multiSessionKey: "macaroon-search-action"
+        )
+        let resultsPage = try await prepareSearchResultsSession(
+            session: session,
+            query: query,
+            zoneOrOutputID: zoneOrOutputID,
+            context: context
+        )
+
+        guard let categoryItemKey = (resultsPage.items ?? []).first(where: {
+            $0.item_key != nil &&
+            $0.title.localizedCaseInsensitiveCompare(categoryTitle) == .orderedSame
+        })?.item_key else {
+            throw NativeBrowseError.browseMessage("Search category '\(categoryTitle)' was not available.")
+        }
+
+        _ = try await browseRequest(
+            session: session,
+            options: NativeBrowseRequest(
+                hierarchy: context.requestHierarchy,
+                multi_session_key: context.multiSessionKey,
+                item_key: categoryItemKey,
+                input: nil,
+                zone_or_output_id: zoneOrOutputID,
+                pop_all: nil,
+                pop_levels: nil,
+                refresh_list: nil
+            )
+        )
+
+        var categoryPage = try await loadCurrentSessionItems(
+            session: session,
+            hierarchy: context.requestHierarchy,
+            multiSessionKey: context.multiSessionKey
+        )
+        var actionContextItemKey = (
+            (categoryPage.items ?? []).first(where: {
+                $0.item_key != nil &&
+                $0.title.localizedCaseInsensitiveCompare(matchTitle) == .orderedSame
+            })?.item_key ??
+            (categoryPage.items ?? []).first(where: { $0.item_key != nil })?.item_key
+        )
+        guard actionContextItemKey != nil else {
+            throw NativeBrowseError.browseMessage("No search result was available for '\(matchTitle)'.")
+        }
+
+        if categoryTitle.localizedCaseInsensitiveCompare("Albums") == .orderedSame {
+            let drilledKey = try await drillToAlbumPlaybackItemKey(
+                session: session,
+                hierarchy: context.requestHierarchy,
+                multiSessionKey: context.multiSessionKey,
+                zoneOrOutputID: zoneOrOutputID,
+                matchTitle: matchTitle,
+                categoryPage: &categoryPage,
+                initialItemKey: actionContextItemKey
+            )
+            actionContextItemKey = drilledKey
+        }
+
+        sessions[.search] = NativeBrowseState(
+            list: categoryPage.list,
+            selectedZoneID: zoneOrOutputID,
+            requestHierarchy: context.requestHierarchy,
+            multiSessionKey: context.multiSessionKey
+        )
+
+        let actionTitle = preferredActionTitles.first ?? "Play Now"
+        try await performResolvedContextAction(
+            session: session,
+            hierarchy: .search,
+            contextItemKey: try require(actionContextItemKey),
+            actionTitle: actionTitle,
+            zoneOrOutputID: zoneOrOutputID
+        )
+    }
+
     func contextActions(
         session: NativeMooSession,
         hierarchy: BrowseHierarchy,
@@ -598,6 +769,75 @@ actor NativeBrowseClient {
         return try await loadPage(session: session, hierarchy: hierarchy, offset: offset, count: 100).page
     }
 
+    private func prepareSearchResultsSession(
+        session: NativeMooSession,
+        query: String,
+        zoneOrOutputID: String?,
+        context: NativeBrowseSessionContext
+    ) async throws -> NativeBrowseLoadPayload {
+        let rootItems = try await loadBrowseRootItems(
+            session: session,
+            hierarchy: .search,
+            zoneOrOutputID: zoneOrOutputID,
+            multiSessionKey: context.multiSessionKey
+        )
+
+        guard let libraryItemKey = rootItems.first(where: {
+            $0.item_key != nil &&
+            $0.title.localizedCaseInsensitiveCompare("Library") == .orderedSame
+        })?.item_key else {
+            throw NativeBrowseError.browseMessage("Library search entry was not available.")
+        }
+
+        _ = try await browseRequest(
+            session: session,
+            options: NativeBrowseRequest(
+                hierarchy: context.requestHierarchy,
+                multi_session_key: context.multiSessionKey,
+                item_key: libraryItemKey,
+                input: nil,
+                zone_or_output_id: zoneOrOutputID,
+                pop_all: nil,
+                pop_levels: nil,
+                refresh_list: nil
+            )
+        )
+
+        let promptPage = try await loadCurrentSessionItems(
+            session: session,
+            hierarchy: context.requestHierarchy,
+            multiSessionKey: context.multiSessionKey
+        )
+        guard let promptItemKey = (promptPage.items ?? []).first(where: {
+            guard let prompt = $0.input_prompt?.prompt else {
+                return false
+            }
+            return prompt.isEmpty == false
+        })?.item_key else {
+            throw NativeBrowseError.browseMessage("Search prompt was not available.")
+        }
+
+        _ = try await browseRequest(
+            session: session,
+            options: NativeBrowseRequest(
+                hierarchy: context.requestHierarchy,
+                multi_session_key: context.multiSessionKey,
+                item_key: promptItemKey,
+                input: query,
+                zone_or_output_id: zoneOrOutputID,
+                pop_all: nil,
+                pop_levels: nil,
+                refresh_list: nil
+            )
+        )
+
+        return try await loadCurrentSessionItems(
+            session: session,
+            hierarchy: context.requestHierarchy,
+            multiSessionKey: context.multiSessionKey
+        )
+    }
+
     private func loadCurrentSessionItems(
         session: NativeMooSession,
         hierarchy: String,
@@ -613,6 +853,117 @@ actor NativeBrowseClient {
                 multi_session_key: multiSessionKey
             )
         )
+    }
+
+    private func loadAllCurrentSessionItems(
+        session: NativeMooSession,
+        hierarchy: String,
+        multiSessionKey: String?
+    ) async throws -> NativeBrowseLoadPayload {
+        let initial = try await loadCurrentSessionItems(
+            session: session,
+            hierarchy: hierarchy,
+            multiSessionKey: multiSessionKey
+        )
+
+        guard let list = initial.list else {
+            return initial
+        }
+
+        var mergedItems = initial.items ?? []
+        let totalCount = list.count
+        guard mergedItems.count < totalCount else {
+            return initial
+        }
+
+        var nextOffset = mergedItems.count
+        while nextOffset < totalCount {
+            let loaded = try await loadRequest(
+                session: session,
+                options: NativeBrowseLoadRequest(
+                    hierarchy: hierarchy,
+                    offset: nextOffset,
+                    count: min(100, totalCount - nextOffset),
+                    set_display_offset: nextOffset,
+                    multi_session_key: multiSessionKey
+                )
+            )
+            mergedItems.append(contentsOf: loaded.items ?? [])
+            nextOffset = mergedItems.count
+        }
+
+        return NativeBrowseLoadPayload(
+            items: mergedItems,
+            offset: initial.offset,
+            list: list
+        )
+    }
+
+    private func drillToAlbumPlaybackItemKey(
+        session: NativeMooSession,
+        hierarchy: String,
+        multiSessionKey: String?,
+        zoneOrOutputID: String?,
+        matchTitle: String,
+        categoryPage: inout NativeBrowseLoadPayload,
+        initialItemKey: String?
+    ) async throws -> String? {
+        guard let initialItemKey else {
+            return nil
+        }
+
+        func exactMatchKey(in page: NativeBrowseLoadPayload, title: String) -> String? {
+            (page.items ?? []).first(where: {
+                $0.item_key != nil &&
+                $0.title.localizedCaseInsensitiveCompare(title) == .orderedSame
+            })?.item_key
+        }
+
+        var currentItemKey = initialItemKey
+        var drilledPage = categoryPage
+
+        if let candidateKey = exactMatchKey(in: drilledPage, title: matchTitle), candidateKey != currentItemKey {
+            currentItemKey = candidateKey
+        }
+
+        for _ in 0..<2 {
+            _ = try await browseRequest(
+                session: session,
+                options: NativeBrowseRequest(
+                    hierarchy: hierarchy,
+                    multi_session_key: multiSessionKey,
+                    item_key: currentItemKey,
+                    input: nil,
+                    zone_or_output_id: zoneOrOutputID,
+                    pop_all: nil,
+                    pop_levels: nil,
+                    refresh_list: nil
+                )
+            )
+
+            drilledPage = try await loadCurrentSessionItems(
+                session: session,
+                hierarchy: hierarchy,
+                multiSessionKey: multiSessionKey
+            )
+
+            if let playAlbumKey = (drilledPage.items ?? []).first(where: {
+                $0.item_key != nil &&
+                $0.title.localizedCaseInsensitiveCompare("Play Album") == .orderedSame
+            })?.item_key {
+                categoryPage = drilledPage
+                return playAlbumKey
+            }
+
+            guard let candidateKey = exactMatchKey(in: drilledPage, title: matchTitle),
+                  candidateKey != currentItemKey else {
+                break
+            }
+            currentItemKey = candidateKey
+        }
+
+        categoryPage = drilledPage
+        return currentItemKey
     }
 
     private func singleExactMatchItem(
@@ -676,7 +1027,7 @@ actor NativeBrowseClient {
         zoneOrOutputID: String?
     ) async throws -> ResolvedBrowseActions {
         let state = sessions[hierarchy]
-        let context = sessionContext(for: hierarchy)
+        let context = currentSessionContext(for: hierarchy)
         let baselineLevel = state?.list?.level ?? 0
 
         let topLevelResult = try await browseRequest(
@@ -782,7 +1133,7 @@ actor NativeBrowseClient {
         actionTitle: String,
         zoneOrOutputID: String?
     ) async throws {
-        let context = sessionContext(for: hierarchy)
+        let context = currentSessionContext(for: hierarchy)
         let baselineLevel = sessions[hierarchy]?.list?.level ?? 0
         let resolved = try await resolveActionsInCurrentSession(
             session: session,
@@ -892,6 +1243,16 @@ actor NativeBrowseClient {
             return NativeBrowseSessionContext(requestHierarchy: "browse", multiSessionKey: "macaroon-search")
         }
         return NativeBrowseSessionContext(requestHierarchy: hierarchy.rawValue, multiSessionKey: nil)
+    }
+
+    private func currentSessionContext(for hierarchy: BrowseHierarchy) -> NativeBrowseSessionContext {
+        if let state = sessions[hierarchy] {
+            return NativeBrowseSessionContext(
+                requestHierarchy: state.requestHierarchy,
+                multiSessionKey: state.multiSessionKey
+            )
+        }
+        return sessionContext(for: hierarchy)
     }
 
     private func browseRequest(

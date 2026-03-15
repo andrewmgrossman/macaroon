@@ -163,6 +163,38 @@ struct BrowsePage: Codable, Equatable, Sendable {
     var selectedZoneID: String?
 }
 
+enum SearchResultsSectionKind: String, CaseIterable, Codable, Identifiable, Sendable {
+    case artists
+    case albums
+    case composers
+    case tracks
+    case works
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .artists: "Artists"
+        case .albums: "Albums"
+        case .composers: "Composers"
+        case .tracks: "Tracks"
+        case .works: "Works"
+        }
+    }
+}
+
+struct SearchResultsSection: Codable, Equatable, Identifiable, Sendable {
+    var id: SearchResultsSectionKind { kind }
+    var kind: SearchResultsSectionKind
+    var items: [BrowseItem]
+}
+
+struct SearchResultsPage: Codable, Equatable, Sendable {
+    var query: String
+    var topHit: BrowseItem?
+    var sections: [SearchResultsSection]
+}
+
 struct QueueItemSummary: Codable, Equatable, Identifiable, Sendable {
     var id: String { queueItemID }
     var queueItemID: String

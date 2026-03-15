@@ -66,11 +66,11 @@ struct RootView: View {
                 }
             }
 
-            ToolbarItem(placement: .automatic) {
+            ToolbarItem(placement: .primaryAction) {
                 SearchToolbarField()
             }
 
-            ToolbarItem(placement: .primaryAction) {
+            ToolbarItem(placement: .confirmationAction) {
                 Button {
                     model.toggleQueueSidebar()
                 } label: {
@@ -89,6 +89,111 @@ struct RootView: View {
 @MainActor
 private func clearToolbarSearchFocus() {
     NSApp.keyWindow?.makeFirstResponder(nil)
+}
+
+private struct AutofillDisabledTextField: NSViewRepresentable {
+    @Binding var text: String
+    var placeholder: String
+    var onSubmit: (() -> Void)? = nil
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    func makeNSView(context: Context) -> NonAutofillTextField {
+        let textField = NonAutofillTextField()
+        textField.isBordered = false
+        textField.isBezeled = false
+        textField.drawsBackground = false
+        textField.focusRingType = .none
+        textField.font = .systemFont(ofSize: NSFont.systemFontSize)
+        textField.lineBreakMode = .byTruncatingTail
+        textField.placeholderString = placeholder
+        textField.stringValue = text
+        textField.delegate = context.coordinator
+        textField.target = context.coordinator
+        textField.action = #selector(Coordinator.submit)
+        textField.configureForPlainInput()
+        return textField
+    }
+
+    func updateNSView(_ nsView: NonAutofillTextField, context: Context) {
+        if nsView.stringValue != text {
+            nsView.stringValue = text
+        }
+        if nsView.placeholderString != placeholder {
+            nsView.placeholderString = placeholder
+        }
+        nsView.configureForPlainInput()
+        context.coordinator.parent = self
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var parent: AutofillDisabledTextField
+
+        init(parent: AutofillDisabledTextField) {
+            self.parent = parent
+        }
+
+        func controlTextDidChange(_ notification: Notification) {
+            guard let textField = notification.object as? NSTextField else {
+                return
+            }
+            if parent.text != textField.stringValue {
+                parent.text = textField.stringValue
+            }
+        }
+
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+                parent.onSubmit?()
+                return true
+            }
+            return false
+        }
+
+        @objc
+        func submit() {
+            parent.onSubmit?()
+        }
+    }
+}
+
+private final class NonAutofillTextField: NSTextField {
+    override func becomeFirstResponder() -> Bool {
+        let becameFirstResponder = super.becomeFirstResponder()
+        configureForPlainInput()
+        return becameFirstResponder
+    }
+
+    override func textDidBeginEditing(_ notification: Notification) {
+        super.textDidBeginEditing(notification)
+        configureForPlainInput()
+    }
+
+    func configureForPlainInput() {
+        isAutomaticTextCompletionEnabled = false
+        allowsCharacterPickerTouchBarItem = false
+        if #available(macOS 11.0, *) {
+            contentType = nil
+        }
+        if #available(macOS 15.2, *) {
+            allowsWritingTools = false
+        }
+        if #available(macOS 15.4, *) {
+            allowsWritingToolsAffordance = false
+        }
+        if let editor = currentEditor() as? NSTextView {
+            editor.isAutomaticTextCompletionEnabled = false
+            editor.isAutomaticTextReplacementEnabled = false
+            editor.isAutomaticSpellingCorrectionEnabled = false
+            editor.isAutomaticQuoteSubstitutionEnabled = false
+            editor.isAutomaticDashSubstitutionEnabled = false
+            editor.isAutomaticDataDetectionEnabled = false
+            editor.isAutomaticLinkDetectionEnabled = false
+        }
+    }
 }
 
 private struct MainContentView: View {
@@ -199,7 +304,9 @@ private struct BrowserView: View {
     var body: some View {
         VStack(spacing: 0) {
             if let page = model.browsePage {
-                if let albumContext = albumDetailContext(for: page) {
+                if let searchResultsPage = searchResultsPage(for: page) {
+                    SearchResultsView(resultsPage: searchResultsPage)
+                } else if let albumContext = albumDetailContext(for: page) {
                     AlbumDetailView(context: albumContext)
                 } else if let artistContext = artistDetailContext(for: page) {
                     ArtistDetailView(context: artistContext)
@@ -293,6 +400,15 @@ private struct BrowserView: View {
             playItem: playItem
         )
     }
+
+    private func searchResultsPage(for page: BrowsePage) -> SearchResultsPage? {
+        guard page.hierarchy == .search,
+              page.list.title.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare("Search") == .orderedSame
+        else {
+            return nil
+        }
+        return model.searchResultsPage
+    }
 }
 
 private struct AlbumDetailContext {
@@ -332,7 +448,10 @@ private struct BrowseGridSlot: View {
 
     var body: some View {
         if let item = model.browseItem(at: index) {
-            BrowserGridCard(item: item)
+            BrowserGridCard(
+                item: item,
+                showsPlaybackAffordances: model.selectedHierarchy != .artists && model.selectedHierarchy != .composers
+            )
         } else {
             BrowserGridCardPlaceholder()
         }
@@ -479,8 +598,6 @@ private struct ArtistDetailView: View {
                                     .foregroundStyle(.secondary)
                             }
 
-                            DetailHeaderPlaybackControls(item: context.playItem)
-
                             if albumCount > 0 {
                                 Text(albumCount == 1 ? "1 album" : "\(albumCount) albums")
                                     .font(.subheadline)
@@ -544,6 +661,244 @@ private struct ArtistDetailView: View {
 
     private var albumCount: Int {
         max(context.page.list.count - 1, 0)
+    }
+}
+
+private struct SearchResultsView: View {
+    @Environment(AppModel.self) private var model
+    let resultsPage: SearchResultsPage
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                Text("Search: \(resultsPage.query)")
+                    .font(.system(size: 30, weight: .semibold))
+
+                if let topHit = resultsPage.topHit {
+                    BrowserRow(item: topHit) {
+                        if topHit.inputPrompt == nil {
+                            model.openItem(topHit)
+                        }
+                    }
+                }
+
+                if resultsPage.sections.isEmpty {
+                    ProgressView()
+                        .controlSize(.small)
+                        .padding(.top, 8)
+                } else {
+                    ForEach(resultsPage.sections) { section in
+                        SearchResultsSectionView(
+                            query: resultsPage.query,
+                            section: section
+                        )
+                    }
+                }
+            }
+            .padding(.horizontal, 28)
+            .padding(.top, 26)
+            .padding(.bottom, miniPlayerReservedHeight)
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+}
+
+private struct SearchResultsSectionView: View {
+    let query: String
+    let section: SearchResultsSection
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(section.kind.title)
+                .font(.system(size: 18, weight: .semibold))
+
+            if section.kind == .tracks {
+                VStack(spacing: 0) {
+                    ForEach(section.items) { item in
+                        SearchTrackRow(
+                            query: query,
+                            item: item
+                        )
+                        if item.id != section.items.last?.id {
+                            Divider()
+                                .padding(.leading, 44)
+                        }
+                    }
+                }
+                .background(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(Color(nsColor: .controlBackgroundColor))
+                )
+            } else {
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 170, maximum: 210), spacing: 18)],
+                    spacing: 18
+                ) {
+                    ForEach(section.items) { item in
+                        SearchGridCard(
+                            query: query,
+                            category: section.kind,
+                            item: item
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct SearchGridCard: View {
+    @Environment(AppModel.self) private var model
+    let query: String
+    let category: SearchResultsSectionKind
+    let item: BrowseItem
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Button {
+                model.openSearchResult(query: query, category: category, matchTitle: item.title)
+            } label: {
+                ArtworkView(
+                    imageKey: item.imageKey,
+                    title: item.title,
+                    size: CGSize(width: browseGridArtworkSize, height: browseGridArtworkSize)
+                )
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            HStack(alignment: .top, spacing: 10) {
+                Button {
+                    model.openSearchResult(query: query, category: category, matchTitle: item.title)
+                } label: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(item.title)
+                            .font(.system(size: 13, weight: .semibold))
+                            .lineLimit(2)
+                            .multilineTextAlignment(.leading)
+
+                        if let subtitle = item.subtitle, subtitle.isEmpty == false {
+                            Text(subtitle)
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                                .multilineTextAlignment(.leading)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+
+                if category != .artists {
+                    SearchGridPlaybackAffordances(
+                        query: query,
+                        category: category,
+                        item: item
+                    )
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+        .frame(height: browseGridCardHeight)
+    }
+}
+
+private struct SearchGridPlaybackAffordances: View {
+    @Environment(AppModel.self) private var model
+    let query: String
+    let category: SearchResultsSectionKind
+    let item: BrowseItem
+
+    var body: some View {
+        VStack(spacing: 4) {
+            Button {
+                model.playSearchResult(query: query, category: category, matchTitle: item.title)
+            } label: {
+                Image(systemName: "play.fill")
+                    .font(.system(size: 10, weight: .bold))
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.plain)
+
+            Menu {
+                Button("Play Now") {
+                    model.playSearchResult(query: query, category: category, matchTitle: item.title, preferredActionTitles: ["Play Now"])
+                }
+                Button("Add Next") {
+                    model.playSearchResult(query: query, category: category, matchTitle: item.title, preferredActionTitles: ["Add Next"])
+                }
+                Button("Queue") {
+                    model.playSearchResult(query: query, category: category, matchTitle: item.title, preferredActionTitles: ["Queue"])
+                }
+                Button("Start Radio") {
+                    model.playSearchResult(query: query, category: category, matchTitle: item.title, preferredActionTitles: ["Start Radio"])
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 10, weight: .bold))
+                    .frame(width: 24, height: 24)
+            }
+            .menuStyle(.borderlessButton)
+        }
+    }
+}
+
+private struct SearchTrackRow: View {
+    @Environment(AppModel.self) private var model
+    let query: String
+    let item: BrowseItem
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Button {
+                model.playSearchResult(query: query, category: .tracks, matchTitle: item.title)
+            } label: {
+                Image(systemName: "play.fill")
+                    .font(.system(size: 10, weight: .bold))
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.plain)
+            .disabled(item.title.isEmpty)
+
+            Button {
+                model.playSearchResult(query: query, category: .tracks, matchTitle: item.title)
+            } label: {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(item.title)
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(.primary)
+                            .multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+
+                        if let subtitle = item.subtitle, subtitle.isEmpty == false {
+                            Text(subtitle)
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.leading)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+
+                    Spacer(minLength: 8)
+
+                    if let length = item.length {
+                        Text(formatDuration(length))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
     }
 }
 
@@ -707,7 +1062,6 @@ private struct AlbumTrackRowPlaceholder: View {
 
 private struct SearchToolbarField: View {
     @Environment(AppModel.self) private var model
-    @FocusState private var isFocused: Bool
 
     var body: some View {
         @Bindable var model = model
@@ -715,13 +1069,14 @@ private struct SearchToolbarField: View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
-            TextField("Search Library", text: $model.searchText)
-                .textFieldStyle(.plain)
-                .frame(width: 220)
-                .focused($isFocused)
-                .onSubmit {
+            AutofillDisabledTextField(
+                text: $model.searchText,
+                placeholder: "Search Library",
+                onSubmit: {
                     model.runSearch()
                 }
+            )
+                .frame(width: 220)
 
             if model.searchText.isEmpty == false {
                 Button {
@@ -1188,7 +1543,8 @@ struct SettingsView: View {
         @Bindable var model = model
 
         Form {
-            TextField("Host", text: $model.manualConnect.host)
+            AutofillDisabledTextField(text: $model.manualConnect.host, placeholder: "Host")
+                .frame(height: 22)
             TextField("Port", value: $model.manualConnect.port, format: .number)
             Toggle("Use mock bridge", isOn: $model.isUsingMockBridge)
                 .disabled(true)
@@ -1335,6 +1691,7 @@ private struct BrowserRow: View {
 private struct BrowserGridCard: View {
     @Environment(AppModel.self) private var model
     let item: BrowseItem
+    var showsPlaybackAffordances: Bool = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1375,7 +1732,9 @@ private struct BrowserGridCard: View {
                 }
                 .buttonStyle(.plain)
 
-                PlaybackAffordances(item: item)
+                if showsPlaybackAffordances {
+                    PlaybackAffordances(item: item)
+                }
             }
         }
         .padding(12)
@@ -1529,8 +1888,11 @@ private struct SearchPromptRow: View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
-            TextField(item.inputPrompt?.prompt ?? "Search", text: $text)
-                .textFieldStyle(.plain)
+            AutofillDisabledTextField(
+                text: $text,
+                placeholder: item.inputPrompt?.prompt ?? "Search",
+                onSubmit: submit
+            )
             Button(item.inputPrompt?.action ?? "Go", action: submit)
                 .buttonStyle(.borderedProminent)
                 .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)

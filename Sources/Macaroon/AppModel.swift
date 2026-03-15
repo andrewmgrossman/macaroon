@@ -79,6 +79,7 @@ final class AppModel {
     var isUsingMockBridge = false
     var autoConnectionIssue: String?
     var searchText = ""
+    var searchResultsPage: SearchResultsPage?
 
     @ObservationIgnored
     private var bridge: BridgeService?
@@ -95,6 +96,8 @@ final class AppModel {
     @ObservationIgnored
     private var pendingSearchQuery: String?
     @ObservationIgnored
+    private var searchRootBrowsePage: BrowsePage?
+    @ObservationIgnored
     private var activeBrowseLoadOffsets: Set<Int> = []
     @ObservationIgnored
     private var loadedBrowseLoadOffsets: Set<Int> = []
@@ -108,6 +111,8 @@ final class AppModel {
     private var queueSubscriptionZoneID: String?
     @ObservationIgnored
     private var hasLoadedBrowseServices = false
+    @ObservationIgnored
+    private var searchSectionsTask: Task<Void, Never>?
     @ObservationIgnored
     private let bridgeFactory: @MainActor () -> BridgeService
     @ObservationIgnored
@@ -292,6 +297,11 @@ final class AppModel {
         selectedBrowseServiceTitle = nil
         navigationTrail.removeAll()
         forwardNavigationTrail.removeAll()
+        searchSectionsTask?.cancel()
+        searchRootBrowsePage = nil
+        if hierarchy != .search {
+            searchResultsPage = nil
+        }
         if hierarchy != .search {
             pendingSearchQuery = nil
         }
@@ -367,6 +377,47 @@ final class AppModel {
         )
     }
 
+    func openSearchResult(
+        query: String,
+        category: SearchResultsSectionKind,
+        matchTitle: String
+    ) {
+        performNavigation(
+            .openSearchMatch(query: query, categoryTitle: category.title, matchTitle: matchTitle),
+            historyMode: .newAction
+        )
+    }
+
+    func playSearchResult(
+        query: String,
+        category: SearchResultsSectionKind,
+        matchTitle: String,
+        preferredActionTitles: [String] = ["Play Now"]
+    ) {
+        MacaroonDebugLogger.logApp(
+            "app.play_search_result",
+            details: [
+                "query": query,
+                "category": category.rawValue,
+                "match_title": matchTitle
+            ]
+        )
+
+        Task {
+            do {
+                try await bridge?.send("browse.performSearchMatchAction", params: BrowsePerformSearchMatchActionParams(
+                    query: query,
+                    categoryTitle: category.title,
+                    matchTitle: matchTitle,
+                    preferredActionTitles: preferredActionTitles,
+                    zoneOrOutputID: selectedZoneID
+                ))
+            } catch {
+                errorState = ErrorState(title: "Playback Action Failed", message: error.localizedDescription)
+            }
+        }
+    }
+
     func openItem(_ item: BrowseItem) {
         guard let itemKey = item.itemKey else {
             return
@@ -381,6 +432,12 @@ final class AppModel {
             if let movedAction {
                 forwardNavigationTrail.append(movedAction)
             }
+
+            if shouldRestoreSearchResultsOnBack {
+                restoreSearchResultsPage()
+                return
+            }
+
             do {
                 try await bridge?.send("browse.back", params: BrowseBackParams(
                     hierarchy: selectedHierarchy,
@@ -846,6 +903,9 @@ final class AppModel {
                 connectionStatus = .disconnected
                 queueState = nil
                 queueSubscriptionZoneID = nil
+                searchResultsPage = nil
+                searchRootBrowsePage = nil
+                searchSectionsTask?.cancel()
                 connectionMonitorTask?.cancel()
                 connectionMonitorTask = nil
             case let .connecting(mode):
@@ -899,6 +959,19 @@ final class AppModel {
             }
             if payload.page.hierarchy == .browse, payload.page.list.level == 0 {
                 selectedBrowseServiceTitle = nil
+            }
+            if supportsStructuredSearchResults, shouldShowSearchResultsPage(for: payload.page) {
+                let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+                searchRootBrowsePage = payload.page
+                searchResultsPage = SearchResultsPage(
+                    query: query,
+                    topHit: payload.page.items.first,
+                    sections: searchResultsPage?.query == query ? searchResultsPage?.sections ?? [] : []
+                )
+                loadSearchSections(for: query)
+            } else {
+                searchSectionsTask?.cancel()
+                searchResultsPage = nil
             }
             applyBrowsePage(payload.page)
         case let .browseItemReplaced(payload):
@@ -1088,6 +1161,89 @@ final class AppModel {
             item.title.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare("Library") == .orderedSame &&
             item.itemKey != nil
         })
+    }
+
+    private func shouldShowSearchResultsPage(for page: BrowsePage) -> Bool {
+        guard selectedHierarchy == .search, page.hierarchy == .search else {
+            return false
+        }
+
+        return page.list.title.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare("Search") == .orderedSame
+    }
+
+    private var supportsStructuredSearchResults: Bool {
+        bridge is NativeRoonBridgeService || isUsingMockBridge
+    }
+
+    private func loadSearchSections(for query: String) {
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard query.isEmpty == false else {
+            searchResultsPage = nil
+            searchRootBrowsePage = nil
+            return
+        }
+
+        searchSectionsTask?.cancel()
+        searchSectionsTask = Task { @MainActor [weak self] in
+            guard let self else {
+                return
+            }
+
+            do {
+                let results = try await bridge?.request(
+                    "browse.searchSections",
+                    params: BrowseSearchSectionsParams(
+                        query: query,
+                        zoneOrOutputID: selectedZoneID
+                    ),
+                    as: SearchResultsPage.self
+                )
+
+                guard Task.isCancelled == false,
+                      selectedHierarchy == .search,
+                      searchText.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare(query) == .orderedSame,
+                      let results
+                else {
+                    return
+                }
+
+                searchResultsPage = SearchResultsPage(
+                    query: results.query,
+                    topHit: searchResultsPage?.topHit ?? results.topHit,
+                    sections: results.sections
+                )
+            } catch {
+                guard Task.isCancelled == false else {
+                    return
+                }
+                errorState = ErrorState(title: "Search Failed", message: error.localizedDescription)
+            }
+        }
+    }
+
+    private var shouldRestoreSearchResultsOnBack: Bool {
+        guard selectedHierarchy == .search,
+              searchResultsPage != nil,
+              let browsePage,
+              browsePage.list.title.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare("Search") != .orderedSame
+        else {
+            return false
+        }
+        return true
+    }
+
+    private func restoreSearchResultsPage() {
+        guard let searchRootBrowsePage else {
+            return
+        }
+
+        browsePage = searchRootBrowsePage
+        browseItemsByIndex.removeAll(keepingCapacity: true)
+        for (index, item) in searchRootBrowsePage.items.enumerated() {
+            browseItemsByIndex[searchRootBrowsePage.offset + index] = item
+        }
+        loadedBrowseLoadOffsets = [searchRootBrowsePage.offset]
+        activeBrowseLoadOffsets.removeAll(keepingCapacity: true)
     }
 
     private func sendVolumeChange(outputID: String, how: VolumeChangeMode, value: Double) async {
@@ -1311,6 +1467,7 @@ final class AppModel {
             selectedBrowseServiceTitle = nil
             pendingSearchQuery = query
             searchText = query
+            searchResultsPage = nil
             MacaroonDebugLogger.logApp(
                 "app.run_search",
                 details: ["query": query, "zone_id": selectedZoneID ?? "<nil>"]
@@ -1332,6 +1489,7 @@ final class AppModel {
             selectedBrowseServiceTitle = nil
             pendingSearchQuery = nil
             searchText = query
+            searchResultsPage = nil
 
             Task {
                 do {

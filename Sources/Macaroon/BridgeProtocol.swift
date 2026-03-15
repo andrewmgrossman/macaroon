@@ -94,6 +94,19 @@ struct BrowseOpenSearchMatchParams: Codable, Equatable, Sendable {
     var zoneOrOutputID: String?
 }
 
+struct BrowseSearchSectionsParams: Codable, Equatable, Sendable {
+    var query: String
+    var zoneOrOutputID: String?
+}
+
+struct BrowsePerformSearchMatchActionParams: Codable, Equatable, Sendable {
+    var query: String
+    var categoryTitle: String
+    var matchTitle: String
+    var preferredActionTitles: [String]
+    var zoneOrOutputID: String?
+}
+
 enum TransportCommand: String, Codable, Equatable, Sendable {
     case playPause = "playpause"
     case play
