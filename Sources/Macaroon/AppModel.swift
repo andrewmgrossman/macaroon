@@ -82,6 +82,8 @@ final class AppModel {
     var artworkCacheLimitBytes: Int
     var searchFocusRequestID = 0
     var dismissTransientUIRequestID = 0
+    var browseScrollTargetIndex: Int?
+    var browseScrollTargetRequestID = 0
 
     var artworkCacheUsageDisplay: String {
         Self.byteCountFormatter.string(fromByteCount: Int64(artworkCacheUsageBytes))
@@ -141,6 +143,12 @@ final class AppModel {
     private var forwardNavigationTrail: [BrowseNavigationAction] = []
     @ObservationIgnored
     private var pageScrollOffsets: [String: CGFloat] = [:]
+    @ObservationIgnored
+    private var typeSelectBuffer = ""
+    @ObservationIgnored
+    private var typeSelectResetTask: Task<Void, Never>?
+    @ObservationIgnored
+    private var typeSelectGeneration = 0
 
     private let browsePageSize = 100
     private let pendingSeekGraceInterval: TimeInterval = 2.0
@@ -657,6 +665,49 @@ final class AppModel {
             errorState = nil
         }
         dismissTransientUIRequestID += 1
+    }
+
+    func handleTypeSelectKeyEvent(_ event: NSEvent) -> Bool {
+        guard canHandleTypeSelect else {
+            return false
+        }
+
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if modifiers.contains(.command) || modifiers.contains(.control) || modifiers.contains(.option) || modifiers.contains(.function) {
+            return false
+        }
+
+        if NSApp.keyWindow?.firstResponder is NSTextView {
+            return false
+        }
+
+        guard let characters = event.charactersIgnoringModifiers?.trimmingCharacters(in: .controlCharacters),
+              characters.count == 1,
+              let scalar = characters.unicodeScalars.first,
+              CharacterSet.alphanumerics.contains(scalar)
+        else {
+            return false
+        }
+
+        typeSelectBuffer.append(String(scalar).lowercased())
+        typeSelectGeneration += 1
+        let generation = typeSelectGeneration
+        let query = typeSelectBuffer
+
+        typeSelectResetTask?.cancel()
+        typeSelectResetTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            guard let self, generation == self.typeSelectGeneration else {
+                return
+            }
+            self.typeSelectBuffer = ""
+        }
+
+        Task { @MainActor [weak self] in
+            await self?.jumpToBrowsePrefix(query, generation: generation)
+        }
+
+        return true
     }
 
     func submitPrompt(for item: BrowseItem, value: String) {
@@ -1476,6 +1527,143 @@ final class AppModel {
 
     func rememberScrollOffset(_ offset: CGFloat, for pageIdentity: String) {
         pageScrollOffsets[pageIdentity] = max(0, offset)
+    }
+
+    private var canHandleTypeSelect: Bool {
+        guard let browsePage else {
+            return false
+        }
+        let isTopLevelArtists = selectedHierarchy == .artists
+        let isTopLevelAlbums = selectedHierarchy == .albums
+        return browsePage.list.level == 0 && (isTopLevelArtists || isTopLevelAlbums)
+    }
+
+    private func jumpToBrowsePrefix(_ query: String, generation: Int) async {
+        guard generation == typeSelectGeneration else {
+            return
+        }
+        guard query.isEmpty == false else {
+            return
+        }
+
+        if let loadedMatch = loadedBrowsePrefixMatch(query) {
+            requestBrowseScroll(to: loadedMatch)
+            return
+        }
+
+        guard let browsePage else {
+            return
+        }
+
+        let pageCount = max((browsePage.list.count + browsePageSize - 1) / browsePageSize, 1)
+        var low = 0
+        var high = pageCount - 1
+        var candidatePage: Int?
+
+        while low <= high {
+            let mid = (low + high) / 2
+            guard let bounds = await pageTitleBounds(pageIndex: mid) else {
+                return
+            }
+
+            if query.localizedCompare(bounds.first) == .orderedAscending {
+                high = mid - 1
+            } else if query.localizedCompare(bounds.last) == .orderedDescending {
+                low = mid + 1
+            } else {
+                candidatePage = mid
+                break
+            }
+        }
+
+        if let candidatePage {
+            for pageIndex in [candidatePage, max(candidatePage - 1, 0), min(candidatePage + 1, pageCount - 1)] {
+                if let match = await pagePrefixMatch(pageIndex: pageIndex, query: query) {
+                    requestBrowseScroll(to: match)
+                    return
+                }
+            }
+        }
+
+        for pageIndex in 0..<pageCount {
+            if let candidatePage, abs(pageIndex - candidatePage) <= 1 {
+                continue
+            }
+            if let match = await pagePrefixMatch(pageIndex: pageIndex, query: query) {
+                requestBrowseScroll(to: match)
+                return
+            }
+        }
+    }
+
+    private func requestBrowseScroll(to index: Int) {
+        browseScrollTargetIndex = index
+        browseScrollTargetRequestID += 1
+    }
+
+    private func loadedBrowsePrefixMatch(_ query: String) -> Int? {
+        browseItemsByIndex
+            .sorted(by: { $0.key < $1.key })
+            .first(where: { normalizedBrowseTitle($0.value.title).hasPrefix(query) })?
+            .key
+    }
+
+    private func pageTitleBounds(pageIndex: Int) async -> (first: String, last: String)? {
+        guard let items = await ensureBrowsePageLoaded(pageIndex: pageIndex), items.isEmpty == false else {
+            return nil
+        }
+
+        let titles = items.map { normalizedBrowseTitle($0.title) }
+        guard let first = titles.first, let last = titles.last else {
+            return nil
+        }
+        return (first, last)
+    }
+
+    private func pagePrefixMatch(pageIndex: Int, query: String) async -> Int? {
+        guard let items = await ensureBrowsePageLoaded(pageIndex: pageIndex), items.isEmpty == false else {
+            return nil
+        }
+
+        let offset = pageIndex * browsePageSize
+        for (itemOffset, item) in items.enumerated() where normalizedBrowseTitle(item.title).hasPrefix(query) {
+            return offset + itemOffset
+        }
+        return nil
+    }
+
+    private func ensureBrowsePageLoaded(pageIndex: Int) async -> [BrowseItem]? {
+        let offset = pageIndex * browsePageSize
+
+        if loadedBrowseLoadOffsets.contains(offset) == false {
+            activeBrowseLoadOffsets.insert(offset)
+            do {
+                try await sessionController?.browseLoadPage(
+                    hierarchy: selectedHierarchy,
+                    offset: offset,
+                    count: browsePageSize
+                )
+            } catch {
+                activeBrowseLoadOffsets.remove(offset)
+                return nil
+            }
+        }
+
+        let deadline = Date().addingTimeInterval(1.5)
+        while loadedBrowseLoadOffsets.contains(offset) == false, Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(30))
+        }
+
+        return loadedItemsForPage(offset: offset)
+    }
+
+    private func loadedItemsForPage(offset: Int) -> [BrowseItem] {
+        (offset..<(offset + browsePageSize))
+            .compactMap { browseItemsByIndex[$0] }
+    }
+
+    private func normalizedBrowseTitle(_ title: String) -> String {
+        title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
     private func performNavigation(_ action: BrowseNavigationAction, historyMode: HistoryMode) {

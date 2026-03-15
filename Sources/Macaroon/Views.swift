@@ -12,19 +12,90 @@ private let detailSectionSpacing: CGFloat = 26
 private struct ResettableScrollContainer<Content: View>: View {
     @Environment(AppModel.self) private var model
     let identity: String
+    var scrollTargetIndex: Int? = nil
+    var scrollTargetRequestID: Int = 0
     @ViewBuilder var content: () -> Content
 
     var body: some View {
-        ScrollView {
-            content()
-                .background(
-                    ScrollOffsetAccessory(
-                        identity: identity,
-                        restoredOffset: model.scrollOffset(for: identity)
-                    ) { offset in
-                        model.rememberScrollOffset(offset, for: identity)
-                    }
-                )
+        ScrollViewReader { proxy in
+            ScrollView {
+                content()
+                    .background(
+                        ScrollOffsetAccessory(
+                            identity: identity,
+                            restoredOffset: model.scrollOffset(for: identity)
+                        ) { offset in
+                            model.rememberScrollOffset(offset, for: identity)
+                        }
+                    )
+            }
+            .onChange(of: scrollTargetRequestID) { _, _ in
+                guard let scrollTargetIndex else {
+                    return
+                }
+                withAnimation(.easeInOut(duration: 0.16)) {
+                    proxy.scrollTo(scrollTargetIndex, anchor: .top)
+                }
+            }
+        }
+    }
+}
+
+private struct LocalKeyDownMonitor: NSViewRepresentable {
+    let onKeyDown: (NSEvent) -> Bool
+
+    func makeNSView(context: Context) -> KeyDownMonitorView {
+        let view = KeyDownMonitorView()
+        view.onKeyDown = onKeyDown
+        return view
+    }
+
+    func updateNSView(_ nsView: KeyDownMonitorView, context: Context) {
+        nsView.onKeyDown = onKeyDown
+        nsView.installMonitorIfNeeded()
+    }
+
+    static func dismantleNSView(_ nsView: KeyDownMonitorView, coordinator: ()) {
+        nsView.removeMonitor()
+    }
+}
+
+private final class KeyDownMonitorView: NSView {
+    var onKeyDown: ((NSEvent) -> Bool)?
+    private var monitor: Any?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        installMonitorIfNeeded()
+    }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow == nil {
+            removeMonitor()
+        }
+        super.viewWillMove(toWindow: newWindow)
+    }
+
+    func installMonitorIfNeeded() {
+        guard monitor == nil else {
+            return
+        }
+
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else {
+                return event
+            }
+            if self.onKeyDown?(event) == true {
+                return nil
+            }
+            return event
+        }
+    }
+
+    func removeMonitor() {
+        if let monitor {
+            NSEvent.removeMonitor(monitor)
+            self.monitor = nil
         }
     }
 }
@@ -156,6 +227,11 @@ struct RootView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .navigationSplitViewStyle(.balanced)
+            .background(
+                LocalKeyDownMonitor { event in
+                    model.handleTypeSelectKeyEvent(event)
+                }
+            )
 
             MiniPlayerBar()
         }
@@ -456,7 +532,11 @@ private struct BrowserView: View {
                         .padding(.bottom, 18)
                     }
 
-                    ResettableScrollContainer(identity: browseScrollIdentity(for: page)) {
+                    ResettableScrollContainer(
+                        identity: browseScrollIdentity(for: page),
+                        scrollTargetIndex: model.browseScrollTargetIndex,
+                        scrollTargetRequestID: model.browseScrollTargetRequestID
+                    ) {
                         if usesDenseGrid(for: page) {
                             LazyVGrid(
                                 columns: [GridItem(.adaptive(minimum: 170, maximum: 210), spacing: 18)],
