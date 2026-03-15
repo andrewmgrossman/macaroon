@@ -132,6 +132,8 @@ struct NativeSessionControllerTests {
             maxItemCount: 300
         )
 
+        try await Task.sleep(for: .milliseconds(50))
+
         await transport.pushIncoming(try MooCodec.encodeMessage(
             verb: .continue,
             name: "Changed",

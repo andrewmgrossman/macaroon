@@ -99,6 +99,14 @@ actor NativeMooSession {
         body: Body?,
         handler: @escaping @Sendable (MooMessageEnvelope) -> Void
     ) async throws {
+        try await observeRequest(name, body: body, handler: handler)
+    }
+
+    func observeRequest<Body: Encodable>(
+        _ name: String,
+        body: Body?,
+        handler: @escaping @Sendable (MooMessageEnvelope) -> Void
+    ) async throws {
         guard let transport else {
             throw NativeSessionTransportError.unavailable
         }

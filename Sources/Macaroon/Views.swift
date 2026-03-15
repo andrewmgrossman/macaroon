@@ -497,6 +497,8 @@ private struct BrowserView: View {
                     }
                     .background(Color(nsColor: .windowBackgroundColor))
                 }
+            } else if shouldShowRecoveryView {
+                RecoveryView()
             } else {
                 ContentUnavailableView(
                     "No Library Content",
@@ -508,6 +510,15 @@ private struct BrowserView: View {
             }
         }
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var shouldShowRecoveryView: Bool {
+        switch model.connectionStatus {
+        case .disconnected, .connecting, .authorizing, .error:
+            return true
+        case .connected:
+            return false
+        }
     }
 
     private func usesDenseGrid(for page: BrowsePage) -> Bool {
@@ -559,6 +570,226 @@ private struct BrowserView: View {
             return nil
         }
         return model.searchResultsPage
+    }
+}
+
+private struct RecoveryView: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        ScrollView {
+            VStack {
+                VStack(alignment: .leading, spacing: 24) {
+                    HStack(alignment: .top, spacing: 20) {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                                .fill(accentTint.opacity(0.14))
+                                .frame(width: 84, height: 84)
+
+                            Image(systemName: iconName)
+                                .font(.system(size: 32, weight: .medium))
+                                .foregroundStyle(accentTint)
+                        }
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(title)
+                                .font(.system(size: 32, weight: .bold))
+
+                            Text(message)
+                                .font(.system(size: 15))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        Spacer(minLength: 0)
+                    }
+
+                    if showsProgress {
+                        ProgressView()
+                            .controlSize(.regular)
+                    }
+
+                    HStack(spacing: 12) {
+                        Button(primaryActionTitle, action: primaryAction)
+                            .buttonStyle(.borderedProminent)
+
+                        if showsSecondaryAction {
+                            Button(secondaryActionTitle, action: secondaryAction)
+                                .buttonStyle(.bordered)
+                        }
+                    }
+
+                    if showsManualConnect {
+                        VStack(alignment: .leading, spacing: 14) {
+                            Text("Connect Manually")
+                                .font(.system(size: 18, weight: .semibold))
+
+                            HStack(spacing: 12) {
+                                AutofillDisabledTextField(
+                                    text: Binding(
+                                        get: { model.manualConnect.host },
+                                        set: { model.manualConnect.host = $0 }
+                                    ),
+                                    placeholder: "Host"
+                                )
+                                .frame(height: 24)
+
+                                TextField(
+                                    "Port",
+                                    value: Binding(
+                                        get: { model.manualConnect.port },
+                                        set: { model.manualConnect.port = $0 }
+                                    ),
+                                    format: .number
+                                )
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 100)
+
+                                Button("Connect") {
+                                    model.connectManually()
+                                }
+                                .buttonStyle(.bordered)
+                            }
+
+                            Text("Use this if your Core is on another machine or automatic discovery is not working.")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.tertiary)
+                        }
+                        .padding(18)
+                        .background(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .fill(Color(nsColor: .controlBackgroundColor))
+                        )
+                    }
+                }
+                .padding(32)
+                .frame(maxWidth: 760, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 28, style: .continuous)
+                        .fill(Color(nsColor: .windowBackgroundColor))
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 28, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.06))
+                }
+                .shadow(color: .black.opacity(0.06), radius: 20, y: 8)
+                .padding(.horizontal, 32)
+                .padding(.top, 48)
+                .padding(.bottom, miniPlayerReservedHeight)
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .background(
+            LinearGradient(
+                colors: [
+                    Color(nsColor: .windowBackgroundColor),
+                    Color.accentColor.opacity(0.035)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
+    }
+
+    private var title: String {
+        switch model.connectionStatus {
+        case .connecting:
+            return "Connecting to your Core"
+        case let .authorizing(core):
+            return core == nil ? "Approve Macaroon in Roon" : "Approve Macaroon on \(core!.displayName)"
+        case let .error(message):
+            return message.isEmpty ? "Connection Failed" : "Connection Failed"
+        case .disconnected:
+            return model.autoConnectionIssue == nil ? "Connect to a Roon Core" : "Couldn’t Reach Your Core"
+        case .connected:
+            return "Connect to a Roon Core"
+        }
+    }
+
+    private var message: String {
+        switch model.connectionStatus {
+        case let .connecting(mode):
+            return "Macaroon is trying to connect via \(mode). This usually takes only a moment."
+        case let .authorizing(core):
+            let target = core?.displayName ?? "your Roon Core"
+            return "Open Roon, go to Settings > Extensions, and enable Macaroon on \(target). Once it’s approved, retry the connection here."
+        case let .error(message):
+            return message
+        case .disconnected:
+            return model.autoConnectionIssue ?? "Macaroon isn’t connected yet. Try automatic discovery first, or enter your Core’s host and port below."
+        case .connected:
+            return "Macaroon isn’t connected yet."
+        }
+    }
+
+    private var iconName: String {
+        switch model.connectionStatus {
+        case .connecting:
+            return "dot.radiowaves.left.and.right"
+        case .authorizing:
+            return "checkmark.shield"
+        case .error, .disconnected:
+            return "music.note.house"
+        case .connected:
+            return "music.note.house"
+        }
+    }
+
+    private var accentTint: Color {
+        switch model.connectionStatus {
+        case .authorizing:
+            return .orange
+        case .error:
+            return .red
+        default:
+            return .accentColor
+        }
+    }
+
+    private var showsProgress: Bool {
+        if case .connecting = model.connectionStatus {
+            return true
+        }
+        return false
+    }
+
+    private var showsManualConnect: Bool {
+        switch model.connectionStatus {
+        case .disconnected, .error:
+            return true
+        case .connecting, .authorizing, .connected:
+            return false
+        }
+    }
+
+    private var primaryActionTitle: String {
+        switch model.connectionStatus {
+        case .connecting:
+            return "Retry"
+        case .authorizing:
+            return "I’ve Authorized It"
+        case .disconnected, .error, .connected:
+            return "Try Automatic Connect"
+        }
+    }
+
+    private var secondaryActionTitle: String {
+        "Settings"
+    }
+
+    private var showsSecondaryAction: Bool {
+        true
+    }
+
+    private func primaryAction() {
+        switch model.connectionStatus {
+        case .connecting, .authorizing, .disconnected, .error, .connected:
+            model.connectAutomatically()
+        }
+    }
+
+    private func secondaryAction() {
+        model.openSettings()
     }
 }
 

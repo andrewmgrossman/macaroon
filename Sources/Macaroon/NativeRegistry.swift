@@ -54,7 +54,11 @@ struct NativeRegistryExtensionIdentity: Codable, Sendable {
             publisher: "Andrew McG",
             email: "andrew@example.com",
             website: "https://example.invalid/macaroon",
-            required_services: [],
+            required_services: [
+                "com.roonlabs.browse:1",
+                "com.roonlabs.image:1",
+                "com.roonlabs.transport:2"
+            ],
             optional_services: [],
             provided_services: [
                 "com.roonlabs.pairing:1",
@@ -76,6 +80,30 @@ private struct NativeRegistryRegisterResponse: Codable {
     var display_name: String
     var display_version: String
     var token: String
+}
+
+private actor NativeRegistryRegisterAwaiter {
+    private var firstMessage: MooMessageEnvelope?
+    private var continuation: CheckedContinuation<MooMessageEnvelope, Never>?
+
+    func yield(_ message: MooMessageEnvelope) {
+        if let continuation {
+            self.continuation = nil
+            continuation.resume(returning: message)
+        } else if firstMessage == nil {
+            firstMessage = message
+        }
+    }
+
+    func firstResponse() async -> MooMessageEnvelope {
+        if let firstMessage {
+            return firstMessage
+        }
+
+        return await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
 }
 
 struct NativePairingStatePayload: Codable {
@@ -150,10 +178,16 @@ actor NativeRegistryClient {
         await session.setCurrentCoreID(infoResponse.core_id)
 
         let registerBody = NativeRegistryExtensionIdentity.macaroon(token: token)
-        let registerMessage = try await session.request(
+        let registerAwaiter = NativeRegistryRegisterAwaiter()
+        try await session.observeRequest(
             "com.roonlabs.registry:1/register",
             body: registerBody
-        )
+        ) { message in
+            Task {
+                await registerAwaiter.yield(message)
+            }
+        }
+        let registerMessage = await registerAwaiter.firstResponse()
 
         guard registerMessage.name == "Registered" else {
             let core = CoreSummary(

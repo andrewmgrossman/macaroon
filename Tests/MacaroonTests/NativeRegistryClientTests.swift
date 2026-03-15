@@ -52,6 +52,11 @@ struct NativeRegistryClientTests {
         #expect(registerRequest.name == "com.roonlabs.registry:1/register")
         let body = try JSONDecoder().decode(NativeRegistryExtensionIdentity.self, from: try #require(registerRequest.body))
         #expect(body.token == "token-1")
+        #expect(body.required_services == [
+            "com.roonlabs.browse:1",
+            "com.roonlabs.image:1",
+            "com.roonlabs.transport:2"
+        ])
         #expect(body.provided_services.contains("com.roonlabs.pairing:1"))
     }
 
@@ -68,7 +73,7 @@ struct NativeRegistryClientTests {
                 contentType: "application/json"
             ),
             try MooCodec.encodeMessage(
-                verb: .complete,
+                verb: .continue,
                 name: "Unauthorized",
                 requestID: "1",
                 body: Data("""
@@ -93,6 +98,11 @@ struct NativeRegistryClientTests {
                 persistedState: .empty
             )
         }
+
+        let sent = await transport.sentMessages()
+        #expect(sent.count == 2)
+        let registerRequest = try MooCodec.decodeMessage(sent[1])
+        #expect(registerRequest.name == "com.roonlabs.registry:1/register")
     }
 
     @Test
