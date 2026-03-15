@@ -1542,19 +1542,64 @@ private struct MiniPlayerVolumeControl: View {
 
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
+    @State private var cacheLimitMegabytes = 0.0
 
     var body: some View {
         @Bindable var model = model
 
         Form {
-            AutofillDisabledTextField(text: $model.manualConnect.host, placeholder: "Host")
-                .frame(height: 22)
-            TextField("Port", value: $model.manualConnect.port, format: .number)
-            Toggle("Use mock bridge", isOn: $model.isUsingMockBridge)
-                .disabled(true)
-            Text("The app launches the bundled helper when present, or falls back to an in-process mock bridge for UI development.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            Section("Artwork Cache") {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("Maximum Cache Size")
+                        Spacer()
+                        Text(model.artworkCacheLimitDisplay)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Slider(
+                        value: $cacheLimitMegabytes,
+                        in: 128...4096,
+                        step: 64
+                    ) { editing in
+                        if editing == false {
+                            Task {
+                                await model.setArtworkCacheLimit(megabytes: cacheLimitMegabytes)
+                            }
+                        }
+                    }
+
+                    HStack {
+                        Text("Current Usage")
+                        Spacer()
+                        Text(model.artworkCacheUsageDisplay)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Button("Clear Cache") {
+                        Task {
+                            await model.clearArtworkCache()
+                        }
+                    }
+                }
+                .onAppear {
+                    cacheLimitMegabytes = model.artworkCacheLimitMegabytes
+                }
+                .onChange(of: model.artworkCacheLimitBytes) { _, newValue in
+                    cacheLimitMegabytes = Double(newValue) / (1024 * 1024)
+                }
+            }
+
+            Section("Connection") {
+                AutofillDisabledTextField(text: $model.manualConnect.host, placeholder: "Host")
+                    .frame(height: 22)
+                TextField("Port", value: $model.manualConnect.port, format: .number)
+                Toggle("Use mock bridge", isOn: $model.isUsingMockBridge)
+                    .disabled(true)
+                Text("The app launches the bundled helper when present, or falls back to an in-process mock bridge for UI development.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding()
     }

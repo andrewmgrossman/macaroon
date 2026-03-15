@@ -84,11 +84,16 @@ struct NativeBridgeServiceTests {
         let registryClient = NativeRegistryClient(transportFactory: { transport })
         let cacheDirectory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             .appendingPathComponent("macaroon-native-bridge-image-\(UUID().uuidString)", isDirectory: true)
+        let settingsStore = ArtworkCacheSettingsStore(defaults: UserDefaults(suiteName: "macaroon-native-bridge-image-\(UUID().uuidString)")!)
+        let cacheStore = ArtworkCacheStore(
+            directoryURL: cacheDirectory,
+            settingsStore: settingsStore
+        )
         let imageClient = NativeImageClient(
             fetch: { _ in
                 NativeImageFetchResponse(contentType: "image/jpeg", data: Data("image".utf8))
             },
-            cacheDirectory: cacheDirectory
+            cacheStore: cacheStore
         )
         let service = NativeRoonBridgeService(
             registryClient: registryClient,

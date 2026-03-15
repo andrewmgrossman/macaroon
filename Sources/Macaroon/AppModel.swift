@@ -80,13 +80,33 @@ final class AppModel {
     var autoConnectionIssue: String?
     var searchText = ""
     var searchResultsPage: SearchResultsPage?
+    var artworkCacheUsageBytes = 0
+    var artworkCacheLimitBytes: Int
+
+    var artworkCacheUsageDisplay: String {
+        Self.byteCountFormatter.string(fromByteCount: Int64(artworkCacheUsageBytes))
+    }
+
+    var artworkCacheLimitDisplay: String {
+        Self.byteCountFormatter.string(fromByteCount: Int64(artworkCacheLimitBytes))
+    }
+
+    var artworkCacheLimitMegabytes: Double {
+        Double(artworkCacheLimitBytes) / (1024 * 1024)
+    }
 
     @ObservationIgnored
     private var bridge: BridgeService?
     @ObservationIgnored
     private var sessionStore = SessionStateStore()
     @ObservationIgnored
-    private var artworkCache: [String: NSImage] = [:]
+    private let artworkSettingsStore: ArtworkCacheSettingsStore
+    @ObservationIgnored
+    private let artworkCacheStore: ArtworkCacheStore
+    @ObservationIgnored
+    private let nativeImageClient: NativeImageClient
+    @ObservationIgnored
+    private let artworkCache = NSCache<NSString, NSImage>()
     @ObservationIgnored
     private var hasAttemptedAutoConnect = false
     @ObservationIgnored
@@ -123,10 +143,27 @@ final class AppModel {
     private let browsePageSize = 100
     private let pendingSeekGraceInterval: TimeInterval = 2.0
     private let preferredZoneIDDefaultsKey = "Macaroon.PreferredZoneID"
+    private static let byteCountFormatter: ByteCountFormatter = {
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useKB, .useMB, .useGB]
+        formatter.countStyle = .file
+        return formatter
+    }()
 
-    init(bridgeFactory: @escaping @MainActor () -> BridgeService = AppModel.defaultBridgeFactory) {
+    init(
+        bridgeFactory: @escaping @MainActor () -> BridgeService = AppModel.defaultBridgeFactory,
+        artworkCacheStore: ArtworkCacheStore = .shared,
+        nativeImageClient: NativeImageClient? = nil,
+        artworkSettingsStore: ArtworkCacheSettingsStore = ArtworkCacheSettingsStore()
+    ) {
+        let artworkSettings = artworkSettingsStore.load()
         self.bridgeFactory = bridgeFactory
+        self.artworkSettingsStore = artworkSettingsStore
+        self.artworkCacheStore = artworkCacheStore
+        self.nativeImageClient = nativeImageClient ?? NativeImageClient(cacheStore: artworkCacheStore)
+        self.artworkCacheLimitBytes = artworkSettings.maxBytes
         self.selectedZoneID = UserDefaults.standard.string(forKey: preferredZoneIDDefaultsKey)
+        configureArtworkMemoryCacheLimit()
     }
 
     func start() {
@@ -149,6 +186,10 @@ final class AppModel {
 
         bridge = service
         isUsingMockBridge = service is MockBridgeService
+
+        Task {
+            await refreshArtworkCacheStats()
+        }
 
         Task {
             do {
@@ -846,32 +887,99 @@ final class AppModel {
         )
     }
 
+    func setArtworkCacheLimit(megabytes: Double) async {
+        let clampedMegabytes = max(
+            Double(ArtworkCacheSettings.minimumBytes) / (1024 * 1024),
+            min(megabytes, Double(ArtworkCacheSettings.maximumBytes) / (1024 * 1024))
+        )
+        let settings = ArtworkCacheSettings(maxBytes: Int(clampedMegabytes * 1024 * 1024))
+        artworkCacheLimitBytes = settings.maxBytes
+        artworkSettingsStore.save(settings)
+        configureArtworkMemoryCacheLimit()
+
+        do {
+            let stats = try await artworkCacheStore.setSettings(settings)
+            artworkCacheUsageBytes = stats.totalBytes
+        } catch {
+            errorState = ErrorState(title: "Artwork Cache Error", message: error.localizedDescription)
+        }
+    }
+
+    func clearArtworkCache() async {
+        artworkCache.removeAllObjects()
+
+        do {
+            try await artworkCacheStore.clear()
+            artworkCacheUsageBytes = 0
+        } catch {
+            errorState = ErrorState(title: "Clear Cache Failed", message: error.localizedDescription)
+        }
+    }
+
     func loadArtwork(imageKey: String?, width: Int = 320, height: Int = 320) async -> NSImage? {
         guard let imageKey, !imageKey.isEmpty else {
             return nil
         }
 
-        if let cached = artworkCache[imageKey] {
+        let variant = ArtworkCacheVariant(
+            imageKey: imageKey,
+            width: width,
+            height: height,
+            format: "image/jpeg"
+        )
+        let cacheKey = variant.cacheKey as NSString
+
+        if let cached = artworkCache.object(forKey: cacheKey) {
             return cached
         }
 
         do {
-            guard let bridge else {
-                return nil
+            let result: ImageFetchedResult
+            if NativeBridgeRuntimeConfiguration.isEnabled, let currentCore {
+                result = try await nativeImageClient.fetchImage(
+                    imageKey: imageKey,
+                    width: width,
+                    height: height,
+                    format: "image/jpeg",
+                    core: currentCore
+                )
+            } else {
+                guard let bridge else {
+                    return nil
+                }
+                result = try await bridge.request(
+                    "image.fetch",
+                    params: ImageFetchParams(imageKey: imageKey, width: width, height: height, format: "image/jpeg"),
+                    as: ImageFetchedResult.self
+                )
             }
-            let result = try await bridge.request(
-                "image.fetch",
-                params: ImageFetchParams(imageKey: imageKey, width: width, height: height, format: "image/jpeg"),
-                as: ImageFetchedResult.self
-            )
             guard let image = NSImage(contentsOfFile: result.localURL) else {
                 return nil
             }
-            artworkCache[imageKey] = image
+            artworkCache.setObject(image, forKey: cacheKey, cost: artworkMemoryCost(width: width, height: height))
+            await refreshArtworkCacheStats()
             return image
         } catch {
             return nil
         }
+    }
+
+    private func refreshArtworkCacheStats() async {
+        do {
+            let stats = try await artworkCacheStore.setSettings(ArtworkCacheSettings(maxBytes: artworkCacheLimitBytes))
+            artworkCacheUsageBytes = stats.totalBytes
+        } catch {
+            MacaroonDebugLogger.logError("artwork_cache.stats_failed", error: error)
+        }
+    }
+
+    private func configureArtworkMemoryCacheLimit() {
+        artworkCache.totalCostLimit = max(32 * 1024 * 1024, min(128 * 1024 * 1024, artworkCacheLimitBytes / 4))
+        artworkCache.countLimit = 512
+    }
+
+    private func artworkMemoryCost(width: Int, height: Int) -> Int {
+        max(width * height * 4, 1)
     }
 
     private func handleBridgeMessage(_ message: BridgeInboundMessage) {

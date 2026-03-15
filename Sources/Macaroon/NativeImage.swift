@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 
 enum NativeImageError: LocalizedError, Equatable, Sendable {
@@ -24,13 +23,11 @@ typealias NativeImageFetchClosure = @Sendable (URL) async throws -> NativeImageF
 
 actor NativeImageClient {
     private let fetch: NativeImageFetchClosure
-    private let cacheDirectory: URL
-    private let fileManager: FileManager
+    private let cacheStore: ArtworkCacheStore
 
     init(
         fetch: NativeImageFetchClosure? = nil,
-        cacheDirectory: URL? = nil,
-        fileManager: FileManager = .default
+        cacheStore: ArtworkCacheStore = .shared
     ) {
         self.fetch = fetch ?? { url in
             let (data, response) = try await URLSession.shared.data(from: url)
@@ -45,9 +42,7 @@ actor NativeImageClient {
                 data: data
             )
         }
-        self.cacheDirectory = cacheDirectory ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-            .appendingPathComponent("macaroon-artwork", isDirectory: true)
-        self.fileManager = fileManager
+        self.cacheStore = cacheStore
     }
 
     func fetchImage(
@@ -59,6 +54,26 @@ actor NativeImageClient {
     ) async throws -> ImageFetchedResult {
         guard let host = core.host, let port = core.port else {
             throw NativeImageError.missingCoreEndpoint
+        }
+
+        let variant = ArtworkCacheVariant(
+            imageKey: imageKey,
+            width: width,
+            height: height,
+            format: format
+        )
+
+        if let cachedURL = try await cacheStore.cachedFileURL(for: variant) {
+            MacaroonDebugLogger.logProtocol(
+                "image.cache_hit",
+                details: [
+                    "image_key": imageKey,
+                    "width": String(width),
+                    "height": String(height),
+                    "format": format
+                ]
+            )
+            return ImageFetchedResult(imageKey: imageKey, localURL: cachedURL.path)
         }
 
         let url = try imageURL(
@@ -88,11 +103,19 @@ actor NativeImageClient {
                 "bytes": String(response.data.count)
             ]
         )
-        let fileURL = try writeCachedImage(
-            imageKey: imageKey,
+        let fileURL = if let storedURL = try await cacheStore.storeImage(
+            variant: variant,
             data: response.data,
             contentType: response.contentType
-        )
+        ) {
+            storedURL
+        } else {
+            try await cacheStore.writeTransientImage(
+                variant: variant,
+                data: response.data,
+                contentType: response.contentType
+            )
+        }
 
         return ImageFetchedResult(imageKey: imageKey, localURL: fileURL.path)
     }
@@ -121,17 +144,5 @@ actor NativeImageClient {
             throw NativeImageError.invalidResponse
         }
         return url
-    }
-
-    private func writeCachedImage(imageKey: String, data: Data, contentType: String) throws -> URL {
-        try fileManager.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
-        let hashedName = Insecure.SHA1
-            .hash(data: Data(imageKey.utf8))
-            .map { String(format: "%02x", $0) }
-            .joined()
-        let ext = contentType == "image/png" ? "png" : "jpg"
-        let fileURL = cacheDirectory.appendingPathComponent("\(hashedName).\(ext)")
-        try data.write(to: fileURL, options: .atomic)
-        return fileURL
     }
 }

@@ -8,6 +8,11 @@ struct NativeImageClientTests {
     func fetchImageBuildsExpectedURLAndCachesJPEG() async throws {
         let cacheDirectory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             .appendingPathComponent("macaroon-native-image-tests-\(UUID().uuidString)", isDirectory: true)
+        let settingsStore = ArtworkCacheSettingsStore(defaults: UserDefaults(suiteName: "macaroon-native-image-tests-\(UUID().uuidString)")!)
+        let cacheStore = ArtworkCacheStore(
+            directoryURL: cacheDirectory,
+            settingsStore: settingsStore
+        )
 
         let observedURL = LockedURL()
         let client = NativeImageClient(
@@ -18,7 +23,7 @@ struct NativeImageClientTests {
                     data: Data("jpeg-bytes".utf8)
                 )
             },
-            cacheDirectory: cacheDirectory
+            cacheStore: cacheStore
         )
 
         let result = try await client.fetchImage(
@@ -48,6 +53,11 @@ struct NativeImageClientTests {
     func fetchImageCachesPNGWithPNGExtension() async throws {
         let cacheDirectory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             .appendingPathComponent("macaroon-native-image-tests-\(UUID().uuidString)", isDirectory: true)
+        let settingsStore = ArtworkCacheSettingsStore(defaults: UserDefaults(suiteName: "macaroon-native-image-tests-\(UUID().uuidString)")!)
+        let cacheStore = ArtworkCacheStore(
+            directoryURL: cacheDirectory,
+            settingsStore: settingsStore
+        )
 
         let client = NativeImageClient(
             fetch: { _ in
@@ -56,7 +66,7 @@ struct NativeImageClientTests {
                     data: Data("png-bytes".utf8)
                 )
             },
-            cacheDirectory: cacheDirectory
+            cacheStore: cacheStore
         )
 
         let result = try await client.fetchImage(
@@ -76,6 +86,54 @@ struct NativeImageClientTests {
         #expect(result.localURL.hasSuffix(".png"))
         #expect(FileManager.default.fileExists(atPath: result.localURL))
     }
+
+    @Test
+    func fetchImageUsesDiskCacheForRepeatedVariant() async throws {
+        let cacheDirectory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("macaroon-native-image-tests-\(UUID().uuidString)", isDirectory: true)
+        let settingsStore = ArtworkCacheSettingsStore(defaults: UserDefaults(suiteName: "macaroon-native-image-tests-\(UUID().uuidString)")!)
+        let cacheStore = ArtworkCacheStore(
+            directoryURL: cacheDirectory,
+            settingsStore: settingsStore
+        )
+        let fetchCount = NativeImageLockedCounter()
+
+        let client = NativeImageClient(
+            fetch: { _ in
+                await fetchCount.increment()
+                return NativeImageFetchResponse(
+                    contentType: "image/jpeg",
+                    data: Data("jpeg-bytes".utf8)
+                )
+            },
+            cacheStore: cacheStore
+        )
+
+        let core = CoreSummary(
+            coreID: "core-1",
+            displayName: "m1mini",
+            displayVersion: "2.62",
+            host: "10.0.7.148",
+            port: 9330
+        )
+
+        _ = try await client.fetchImage(
+            imageKey: "repeat-image",
+            width: 320,
+            height: 320,
+            format: "image/jpeg",
+            core: core
+        )
+        _ = try await client.fetchImage(
+            imageKey: "repeat-image",
+            width: 320,
+            height: 320,
+            format: "image/jpeg",
+            core: core
+        )
+
+        #expect(await fetchCount.value == 1)
+    }
 }
 
 actor LockedURL {
@@ -87,5 +145,13 @@ actor LockedURL {
 
     func get() -> URL? {
         url
+    }
+}
+
+actor NativeImageLockedCounter {
+    private(set) var value = 0
+
+    func increment() {
+        value += 1
     }
 }
