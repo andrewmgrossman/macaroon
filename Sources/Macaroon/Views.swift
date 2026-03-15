@@ -5,6 +5,132 @@ private let browseRowHeight: CGFloat = 84
 private let browseGridArtworkSize: CGFloat = 172
 private let browseGridCardHeight: CGFloat = 286
 private let miniPlayerReservedHeight: CGFloat = 118
+private let detailHeaderArtworkSize: CGFloat = 220
+private let detailSectionSpacing: CGFloat = 26
+
+private struct ResettableScrollContainer<Content: View>: View {
+    @Environment(AppModel.self) private var model
+    let identity: String
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        ScrollView {
+            content()
+                .background(
+                    ScrollOffsetAccessory(
+                        identity: identity,
+                        restoredOffset: model.scrollOffset(for: identity)
+                    ) { offset in
+                        model.rememberScrollOffset(offset, for: identity)
+                    }
+                )
+        }
+    }
+}
+
+private struct ScrollOffsetAccessory: NSViewRepresentable {
+    let identity: String
+    let restoredOffset: CGFloat
+    let onOffsetChanged: (CGFloat) -> Void
+
+    func makeNSView(context: Context) -> ScrollOffsetTrackingView {
+        let view = ScrollOffsetTrackingView()
+        view.onOffsetChanged = onOffsetChanged
+        return view
+    }
+
+    func updateNSView(_ nsView: ScrollOffsetTrackingView, context: Context) {
+        nsView.identity = identity
+        nsView.restoredOffset = restoredOffset
+        nsView.onOffsetChanged = onOffsetChanged
+        nsView.attachIfNeeded()
+        nsView.restoreIfNeeded()
+    }
+
+    static func dismantleNSView(_ nsView: ScrollOffsetTrackingView, coordinator: ()) {
+        nsView.detach()
+    }
+}
+
+private final class ScrollOffsetTrackingView: NSView {
+    var identity = ""
+    var restoredOffset: CGFloat = 0
+    var onOffsetChanged: ((CGFloat) -> Void)?
+
+    private weak var observedScrollView: NSScrollView?
+    private weak var observedClipView: NSClipView?
+    private var appliedIdentity: String?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        DispatchQueue.main.async { [weak self] in
+            self?.attachIfNeeded()
+            self?.restoreIfNeeded()
+        }
+    }
+
+    override func viewWillMove(toSuperview newSuperview: NSView?) {
+        if newSuperview == nil {
+            detach()
+        }
+        super.viewWillMove(toSuperview: newSuperview)
+    }
+
+    func attachIfNeeded() {
+        guard observedScrollView == nil, let scrollView = enclosingScrollView else {
+            return
+        }
+
+        observedScrollView = scrollView
+        observedClipView = scrollView.contentView
+        scrollView.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(scrollBoundsDidChange(_:)),
+            name: NSView.boundsDidChangeNotification,
+            object: scrollView.contentView
+        )
+    }
+
+    func restoreIfNeeded() {
+        guard let scrollView = observedScrollView else {
+            return
+        }
+        guard appliedIdentity != identity else {
+            return
+        }
+
+        appliedIdentity = identity
+
+        DispatchQueue.main.async { [weak self, weak scrollView] in
+            guard let self, let scrollView else {
+                return
+            }
+
+            let documentHeight = scrollView.documentView?.bounds.height ?? 0
+            let visibleHeight = scrollView.contentView.bounds.height
+            let maximumOffset = max(documentHeight - visibleHeight, 0)
+            let clampedOffset = min(max(0, self.restoredOffset), maximumOffset)
+            scrollView.contentView.scroll(to: NSPoint(x: 0, y: clampedOffset))
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+            self.onOffsetChanged?(clampedOffset)
+        }
+    }
+
+    func detach() {
+        NotificationCenter.default.removeObserver(self, name: NSView.boundsDidChangeNotification, object: observedClipView)
+        observedClipView = nil
+        observedScrollView = nil
+    }
+
+    @objc
+    private func scrollBoundsDidChange(_ notification: Notification) {
+        guard let clipView = notification.object as? NSClipView else {
+            return
+        }
+        onOffsetChanged?(clipView.bounds.origin.y)
+    }
+}
 
 private func formatDuration(_ seconds: Double) -> String {
     guard seconds.isFinite else {
@@ -329,7 +455,7 @@ private struct BrowserView: View {
                         .padding(.bottom, 18)
                     }
 
-                    ScrollView {
+                    ResettableScrollContainer(identity: browseScrollIdentity(for: page)) {
                         if usesDenseGrid(for: page) {
                             LazyVGrid(
                                 columns: [GridItem(.adaptive(minimum: 170, maximum: 210), spacing: 18)],
@@ -375,6 +501,15 @@ private struct BrowserView: View {
     private func usesDenseGrid(for page: BrowsePage) -> Bool {
         let title = page.list.title.lowercased()
         return title == "albums" || title == "artists" || title == "composers" || title == "genres" || title == "playlists"
+    }
+
+    private func browseScrollIdentity(for page: BrowsePage) -> String {
+        [
+            page.hierarchy.rawValue,
+            page.list.title,
+            String(page.list.level),
+            model.selectedBrowseServiceTitle ?? ""
+        ].joined(separator: "|")
     }
 
     private func albumDetailContext(for page: BrowsePage) -> AlbumDetailContext? {
@@ -466,26 +601,21 @@ private struct AlbumDetailView: View {
     @Environment(AppModel.self) private var model
     let context: AlbumDetailContext
 
-    private let topAnchorID = "album-detail-top"
-
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    Color.clear
-                        .frame(height: 1)
-                        .id(topAnchorID)
+        ResettableScrollContainer(identity: scrollIdentity) {
+            VStack(alignment: .leading, spacing: detailSectionSpacing) {
+                HStack(alignment: .top, spacing: 30) {
+                    ArtworkView(
+                        imageKey: context.page.list.imageKey,
+                        title: context.page.list.title,
+                        size: CGSize(width: detailHeaderArtworkSize, height: detailHeaderArtworkSize)
+                    )
 
-                    HStack(alignment: .top, spacing: 28) {
-                        ArtworkView(
-                            imageKey: context.page.list.imageKey,
-                            title: context.page.list.title,
-                            size: CGSize(width: 220, height: 220)
-                        )
-
-                        VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        VStack(alignment: .leading, spacing: 8) {
                             Text(context.page.list.title)
-                                .font(.system(size: 34, weight: .semibold))
+                                .font(.system(size: 38, weight: .bold))
+                                .lineSpacing(1)
                                 .fixedSize(horizontal: false, vertical: true)
 
                             if let artistName = context.page.list.subtitle,
@@ -494,25 +624,34 @@ private struct AlbumDetailView: View {
                                     model.openArtist(named: artistName)
                                 } label: {
                                     Text(artistName)
-                                        .font(.system(size: 21, weight: .medium))
+                                        .font(.system(size: 24, weight: .medium))
                                         .foregroundStyle(.secondary)
                                 }
                                 .buttonStyle(.plain)
                             }
-
-                            DetailHeaderPlaybackControls(item: context.playItem)
-
-                            if trackCount > 0 {
-                                Text("\(trackCount) tracks")
-                                    .font(.subheadline)
-                                    .foregroundStyle(.secondary)
-                            }
-
-                            Spacer(minLength: 0)
                         }
+
+                        if trackCount > 0 {
+                            Text(trackCount == 1 ? "1 track" : "\(trackCount) tracks")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(.tertiary)
+                                .padding(.top, 14)
+                        }
+
+                        DetailHeaderPlaybackControls(item: context.playItem)
+                            .padding(.top, 18)
 
                         Spacer(minLength: 0)
                     }
+                    .frame(maxWidth: 560, alignment: .topLeading)
+
+                    Spacer(minLength: 0)
+                }
+
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Tracks")
+                        .font(.system(size: 19, weight: .semibold))
+                        .foregroundStyle(.primary)
 
                     VStack(spacing: 0) {
                         ForEach(1..<context.page.list.count, id: \.self) { index in
@@ -536,23 +675,17 @@ private struct AlbumDetailView: View {
                             }
                         }
                     }
-                    .background(
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .fill(Color(nsColor: .controlBackgroundColor))
-                    )
                 }
-                .padding(.horizontal, 28)
-                .padding(.top, 26)
-                .padding(.bottom, miniPlayerReservedHeight)
+                .background(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(Color(nsColor: .controlBackgroundColor))
+                )
             }
-            .background(Color(nsColor: .windowBackgroundColor))
-            .onAppear {
-                proxy.scrollTo(topAnchorID, anchor: .top)
-            }
-            .onChange(of: scrollIdentity) { _, _ in
-                proxy.scrollTo(topAnchorID, anchor: .top)
-            }
+            .padding(.horizontal, 28)
+            .padding(.top, 26)
+            .padding(.bottom, miniPlayerReservedHeight)
         }
+        .background(Color(nsColor: .windowBackgroundColor))
     }
 
     private var scrollIdentity: String {
@@ -573,85 +706,77 @@ private struct ArtistDetailView: View {
     @Environment(AppModel.self) private var model
     let context: ArtistDetailContext
 
-    private let topAnchorID = "artist-detail-top"
-
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    Color.clear
-                        .frame(height: 1)
-                        .id(topAnchorID)
+        ResettableScrollContainer(identity: scrollIdentity) {
+            VStack(alignment: .leading, spacing: detailSectionSpacing) {
+                HStack(alignment: .top, spacing: 30) {
+                    ArtworkView(
+                        imageKey: context.page.list.imageKey,
+                        title: context.page.list.title,
+                        size: CGSize(width: detailHeaderArtworkSize, height: detailHeaderArtworkSize)
+                    )
 
-                    HStack(alignment: .top, spacing: 28) {
-                        ArtworkView(
-                            imageKey: context.page.list.imageKey,
-                            title: context.page.list.title,
-                            size: CGSize(width: 220, height: 220)
-                        )
-
-                        VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        VStack(alignment: .leading, spacing: 8) {
                             Text(context.page.list.title)
-                                .font(.system(size: 34, weight: .semibold))
+                                .font(.system(size: 38, weight: .bold))
+                                .lineSpacing(1)
                                 .fixedSize(horizontal: false, vertical: true)
 
                             if let subtitle = context.page.list.subtitle,
                                subtitle.isEmpty == false {
                                 Text(subtitle)
-                                    .font(.system(size: 16))
+                                    .font(.system(size: 18, weight: .medium))
                                     .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
                             }
+                        }
 
-                            if albumCount > 0 {
-                                Text(albumCount == 1 ? "1 album" : "\(albumCount) albums")
-                                    .font(.subheadline)
-                                    .foregroundStyle(.secondary)
-                            }
-
-                            Spacer(minLength: 0)
+                        if albumCount > 0 {
+                            Text(albumCount == 1 ? "1 album" : "\(albumCount) albums")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(.tertiary)
+                                .padding(.top, 14)
                         }
 
                         Spacer(minLength: 0)
                     }
+                    .frame(maxWidth: 560, alignment: .topLeading)
 
-                    if albumCount > 0 {
-                        VStack(alignment: .leading, spacing: 14) {
-                            Text("Albums")
-                                .font(.system(size: 18, weight: .semibold))
+                    Spacer(minLength: 0)
+                }
 
-                            LazyVGrid(
-                                columns: [GridItem(.adaptive(minimum: 170, maximum: 210), spacing: 18)],
-                                spacing: 18
-                            ) {
-                                ForEach(1..<context.page.list.count, id: \.self) { index in
-                                    if let item = model.browseItem(at: index) {
-                                        BrowserGridCard(item: item)
-                                            .onAppear {
-                                                model.ensureBrowseItemsLoaded(for: index)
-                                            }
-                                    } else {
-                                        BrowserGridCardPlaceholder()
-                                            .onAppear {
-                                                model.ensureBrowseItemsLoaded(for: index)
-                                            }
-                                    }
+                if albumCount > 0 {
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text("Albums")
+                            .font(.system(size: 19, weight: .semibold))
+
+                        LazyVGrid(
+                            columns: [GridItem(.adaptive(minimum: 170, maximum: 210), spacing: 18)],
+                            spacing: 18
+                        ) {
+                            ForEach(1..<context.page.list.count, id: \.self) { index in
+                                if let item = model.browseItem(at: index) {
+                                    BrowserGridCard(item: item)
+                                        .onAppear {
+                                            model.ensureBrowseItemsLoaded(for: index)
+                                        }
+                                } else {
+                                    BrowserGridCardPlaceholder()
+                                        .onAppear {
+                                            model.ensureBrowseItemsLoaded(for: index)
+                                        }
                                 }
                             }
                         }
                     }
                 }
-                .padding(.horizontal, 28)
-                .padding(.top, 26)
-                .padding(.bottom, miniPlayerReservedHeight)
             }
-            .background(Color(nsColor: .windowBackgroundColor))
-            .onAppear {
-                proxy.scrollTo(topAnchorID, anchor: .top)
-            }
-            .onChange(of: scrollIdentity) { _, _ in
-                proxy.scrollTo(topAnchorID, anchor: .top)
-            }
+            .padding(.horizontal, 28)
+            .padding(.top, 26)
+            .padding(.bottom, miniPlayerReservedHeight)
         }
+        .background(Color(nsColor: .windowBackgroundColor))
     }
 
     private var scrollIdentity: String {
@@ -673,7 +798,7 @@ private struct SearchResultsView: View {
     let resultsPage: SearchResultsPage
 
     var body: some View {
-        ScrollView {
+        ResettableScrollContainer(identity: resultsPage.query) {
             VStack(alignment: .leading, spacing: 24) {
                 Text("Search: \(resultsPage.query)")
                     .font(.system(size: 30, weight: .semibold))

@@ -137,6 +137,8 @@ final class AppModel {
     private var navigationTrail: [BrowseNavigationAction] = []
     @ObservationIgnored
     private var forwardNavigationTrail: [BrowseNavigationAction] = []
+    @ObservationIgnored
+    private var pageScrollOffsets: [String: CGFloat] = [:]
 
     private let browsePageSize = 100
     private let pendingSeekGraceInterval: TimeInterval = 2.0
@@ -1444,6 +1446,14 @@ final class AppModel {
 
     var canGoForward: Bool {
         forwardNavigationTrail.isEmpty == false
+    }
+
+    func scrollOffset(for pageIdentity: String) -> CGFloat {
+        pageScrollOffsets[pageIdentity] ?? 0
+    }
+
+    func rememberScrollOffset(_ offset: CGFloat, for pageIdentity: String) {
+        pageScrollOffsets[pageIdentity] = max(0, offset)
     }
 
     private func performNavigation(_ action: BrowseNavigationAction, historyMode: HistoryMode) {
