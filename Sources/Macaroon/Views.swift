@@ -147,14 +147,16 @@ struct RootView: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        NavigationSplitView {
-            SidebarView()
-                .navigationSplitViewColumnWidth(min: 150, ideal: 210, max: 280)
-        } detail: {
-            MainContentView()
-        }
-        .navigationSplitViewStyle(.balanced)
-        .safeAreaInset(edge: .bottom, spacing: 0) {
+        VStack(spacing: 0) {
+            NavigationSplitView {
+                SidebarView()
+                    .navigationSplitViewColumnWidth(min: 150, ideal: 210, max: 280)
+            } detail: {
+                MainContentView()
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .navigationSplitViewStyle(.balanced)
+
             MiniPlayerBar()
         }
         .overlay(alignment: .top) {
@@ -408,22 +410,6 @@ private struct SidebarView: View {
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
         .background(Color(nsColor: .controlBackgroundColor))
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(model.connectionStatus.summary)
-                    .font(.callout.weight(.semibold))
-                Text(model.sessionStatusText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            .background(.regularMaterial)
-            .overlay(alignment: .top) {
-                Divider()
-            }
-        }
     }
 
     private func iconName(for hierarchy: BrowseHierarchy) -> String {
@@ -692,7 +678,7 @@ private struct RecoveryView: View {
                 .shadow(color: .black.opacity(0.06), radius: 20, y: 8)
                 .padding(.horizontal, 32)
                 .padding(.top, 48)
-                .padding(.bottom, miniPlayerReservedHeight)
+                .padding(.bottom, 32)
             }
             .frame(maxWidth: .infinity)
         }
@@ -944,7 +930,7 @@ private struct AlbumDetailView: View {
             }
             .padding(.horizontal, 28)
             .padding(.top, 26)
-            .padding(.bottom, miniPlayerReservedHeight)
+            .padding(.bottom, 28)
         }
         .background(Color(nsColor: .windowBackgroundColor))
     }
@@ -1035,7 +1021,7 @@ private struct ArtistDetailView: View {
             }
             .padding(.horizontal, 28)
             .padding(.top, 26)
-            .padding(.bottom, miniPlayerReservedHeight)
+            .padding(.bottom, 28)
         }
         .background(Color(nsColor: .windowBackgroundColor))
     }
@@ -1132,7 +1118,7 @@ private struct PlaylistDetailView: View {
             }
             .padding(.horizontal, 28)
             .padding(.top, 26)
-            .padding(.bottom, miniPlayerReservedHeight)
+            .padding(.bottom, 28)
         }
         .background(Color(nsColor: .windowBackgroundColor))
     }
@@ -1184,7 +1170,7 @@ private struct SearchResultsView: View {
             }
             .padding(.horizontal, 28)
             .padding(.top, 26)
-            .padding(.bottom, miniPlayerReservedHeight)
+            .padding(.bottom, 28)
         }
         .background(Color(nsColor: .windowBackgroundColor))
     }
