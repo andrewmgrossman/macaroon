@@ -1,5 +1,16 @@
 import Foundation
 
+enum NativeSessionTransportError: LocalizedError, Equatable, Sendable {
+    case unavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .unavailable:
+            return "The native session transport is unavailable."
+        }
+    }
+}
+
 actor NativeMooSession {
     private let transportFactory: @Sendable () -> any NativeMooTransportProtocol
     private var transport: (any NativeMooTransportProtocol)?
@@ -45,7 +56,7 @@ actor NativeMooSession {
 
         let continuations = pendingRequests.values
         pendingRequests.removeAll()
-        continuations.forEach { $0.resume(throwing: BridgeRuntimeError.processUnavailable) }
+        continuations.forEach { $0.resume(throwing: NativeSessionTransportError.unavailable) }
         subscriptionHandlers.removeAll()
 
         await transport?.disconnect()
@@ -62,7 +73,7 @@ actor NativeMooSession {
 
     func request<Body: Encodable>(_ name: String, body: Body?) async throws -> MooMessageEnvelope {
         guard let transport else {
-            throw BridgeRuntimeError.processUnavailable
+            throw NativeSessionTransportError.unavailable
         }
 
         let requestID = nextRequestIdentifier()
@@ -89,7 +100,7 @@ actor NativeMooSession {
         handler: @escaping @Sendable (MooMessageEnvelope) -> Void
     ) async throws {
         guard let transport else {
-            throw BridgeRuntimeError.processUnavailable
+            throw NativeSessionTransportError.unavailable
         }
 
         let requestID = nextRequestIdentifier()

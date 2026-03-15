@@ -74,9 +74,7 @@ final class AppModel {
             )
         }
     }
-    var helperStatus = "Idle"
-    var lastBridgeError: BridgeErrorPayload?
-    var isUsingMockBridge = false
+    var sessionStatusText = "Idle"
     var autoConnectionIssue: String?
     var searchText = ""
     var searchResultsPage: SearchResultsPage?
@@ -96,7 +94,7 @@ final class AppModel {
     }
 
     @ObservationIgnored
-    private var bridge: BridgeService?
+    private var sessionController: RoonSessionController?
     @ObservationIgnored
     private var sessionStore = SessionStateStore()
     @ObservationIgnored
@@ -134,7 +132,7 @@ final class AppModel {
     @ObservationIgnored
     private var searchSectionsTask: Task<Void, Never>?
     @ObservationIgnored
-    private let bridgeFactory: @MainActor () -> BridgeService
+    private let sessionControllerFactory: @MainActor () -> RoonSessionController
     @ObservationIgnored
     private var navigationTrail: [BrowseNavigationAction] = []
     @ObservationIgnored
@@ -151,13 +149,13 @@ final class AppModel {
     }()
 
     init(
-        bridgeFactory: @escaping @MainActor () -> BridgeService = AppModel.defaultBridgeFactory,
+        sessionControllerFactory: @escaping @MainActor () -> RoonSessionController = AppModel.defaultSessionControllerFactory,
         artworkCacheStore: ArtworkCacheStore = .shared,
         nativeImageClient: NativeImageClient? = nil,
         artworkSettingsStore: ArtworkCacheSettingsStore = ArtworkCacheSettingsStore()
     ) {
         let artworkSettings = artworkSettingsStore.load()
-        self.bridgeFactory = bridgeFactory
+        self.sessionControllerFactory = sessionControllerFactory
         self.artworkSettingsStore = artworkSettingsStore
         self.artworkCacheStore = artworkCacheStore
         self.nativeImageClient = nativeImageClient ?? NativeImageClient(cacheStore: artworkCacheStore)
@@ -167,25 +165,24 @@ final class AppModel {
     }
 
     func start() {
-        guard bridge == nil else {
+        guard sessionController == nil else {
             return
         }
 
         MacaroonDebugLogger.logApp(
             "app.start",
             details: [
-                "native_bridge": NativeBridgeRuntimeConfiguration.isEnabled ? "true" : "false",
+                "runtime": "native",
                 "debug_log_directory": DebugLoggingConfiguration.isCompiled ? MacaroonDebugLogger.sessionDirectoryPath : "<disabled>"
             ]
         )
 
-        let service = bridgeFactory()
-        service.eventHandler = { [weak self] message in
-            self?.handleBridgeMessage(message)
+        let controller = sessionControllerFactory()
+        controller.eventHandler = { [weak self] event in
+            self?.handleSessionEvent(event)
         }
 
-        bridge = service
-        isUsingMockBridge = service is MockBridgeService
+        sessionController = controller
 
         Task {
             await refreshArtworkCacheStats()
@@ -193,26 +190,26 @@ final class AppModel {
 
         Task {
             do {
-                helperStatus = "Starting helper"
-                try await service.start()
-                helperStatus = isUsingMockBridge ? "Running in mock mode" : "Helper connected"
+                sessionStatusText = "Starting native session"
+                try await controller.start()
+                sessionStatusText = "Native session running"
                 autoConnectOnLaunchIfNeeded()
             } catch {
-                helperStatus = "Failed to start helper"
-                errorState = ErrorState(title: "Helper Launch Failed", message: error.localizedDescription)
+                sessionStatusText = "Failed to start native session"
+                errorState = ErrorState(title: "Session Launch Failed", message: error.localizedDescription)
             }
         }
     }
 
     func stop() {
-        guard let bridge else {
+        guard let sessionController else {
             return
         }
 
         Task {
-            await bridge.stop()
+            await sessionController.stop()
         }
-        self.bridge = nil
+        self.sessionController = nil
         connectionMonitorTask?.cancel()
         connectionMonitorTask = nil
     }
@@ -221,19 +218,15 @@ final class AppModel {
         connectionMonitorTask?.cancel()
         connectionMonitorTask = nil
 
-        guard let bridge else {
+        guard let sessionController else {
             return
         }
 
-        if let helper = bridge as? HelperProcessController {
-            helper.terminateSynchronously()
-        } else {
-            Task {
-                await bridge.stop()
-            }
+        Task {
+            await sessionController.stop()
         }
 
-        self.bridge = nil
+        self.sessionController = nil
     }
 
     func connectAutomatically() {
@@ -246,7 +239,7 @@ final class AppModel {
         Task {
             do {
                 let state = try sessionStore.load()
-                try await bridge?.send("connect.auto", params: ConnectAutoParams(persistedState: state))
+                try await sessionController?.connectAutomatically(persistedState: state)
                 startConnectionResolutionMonitor()
             } catch {
                 errorState = ErrorState(title: "Auto Connect Failed", message: error.localizedDescription)
@@ -270,11 +263,11 @@ final class AppModel {
         Task {
             do {
                 let state = try sessionStore.load()
-                try await bridge?.send("connect.manual", params: ConnectManualParams(
+                try await sessionController?.connectManually(
                     host: manualConnect.host,
                     port: manualConnect.port,
                     persistedState: state
-                ))
+                )
             } catch {
                 errorState = ErrorState(title: "Manual Connect Failed", message: error.localizedDescription)
             }
@@ -285,11 +278,7 @@ final class AppModel {
         userInitiatedDisconnect = true
         MacaroonDebugLogger.logApp("app.disconnect")
         Task {
-            do {
-                try await bridge?.send("core.disconnect", params: DisconnectParams())
-            } catch {
-                errorState = ErrorState(title: "Disconnect Failed", message: error.localizedDescription)
-            }
+            await sessionController?.disconnect()
         }
     }
 
@@ -297,7 +286,7 @@ final class AppModel {
         MacaroonDebugLogger.logApp("app.subscribe_zones")
         Task {
             do {
-                try await bridge?.send("zones.subscribe", params: ZonesSubscribeParams())
+                try await sessionController?.subscribeZones()
             } catch {
                 errorState = ErrorState(title: "Zone Subscription Failed", message: error.localizedDescription)
             }
@@ -323,10 +312,7 @@ final class AppModel {
 
         Task {
             do {
-                try await bridge?.send("queue.subscribe", params: QueueSubscribeParams(
-                    zoneOrOutputID: selectedZoneID,
-                    maxItemCount: 300
-                ))
+                try await sessionController?.subscribeQueue(zoneOrOutputID: selectedZoneID, maxItemCount: 300)
             } catch {
                 errorState = ErrorState(title: "Queue Subscription Failed", message: error.localizedDescription)
             }
@@ -352,10 +338,7 @@ final class AppModel {
         )
         Task {
             do {
-                try await bridge?.send("browse.home", params: BrowseHomeParams(
-                    hierarchy: hierarchy,
-                    zoneOrOutputID: selectedZoneID
-                ))
+                try await sessionController?.browseHome(hierarchy: hierarchy, zoneOrOutputID: selectedZoneID)
             } catch {
                 errorState = ErrorState(title: "Browse Failed", message: error.localizedDescription)
             }
@@ -446,13 +429,13 @@ final class AppModel {
 
         Task {
             do {
-                try await bridge?.send("browse.performSearchMatchAction", params: BrowsePerformSearchMatchActionParams(
+                try await sessionController?.browsePerformSearchMatchAction(
                     query: query,
                     categoryTitle: category.title,
                     matchTitle: matchTitle,
                     preferredActionTitles: preferredActionTitles,
                     zoneOrOutputID: selectedZoneID
-                ))
+                )
             } catch {
                 errorState = ErrorState(title: "Playback Action Failed", message: error.localizedDescription)
             }
@@ -480,11 +463,11 @@ final class AppModel {
             }
 
             do {
-                try await bridge?.send("browse.back", params: BrowseBackParams(
+                try await sessionController?.browseBack(
                     hierarchy: selectedHierarchy,
                     levels: 1,
                     zoneOrOutputID: selectedZoneID
-                ))
+                )
             } catch {
                 if let movedAction = forwardNavigationTrail.popLast() {
                     navigationTrail.append(movedAction)
@@ -505,10 +488,7 @@ final class AppModel {
         MacaroonDebugLogger.logApp("app.refresh_browse", details: ["hierarchy": selectedHierarchy.rawValue])
         Task {
             do {
-                try await bridge?.send("browse.refresh", params: BrowseRefreshParams(
-                    hierarchy: selectedHierarchy,
-                    zoneOrOutputID: selectedZoneID
-                ))
+                try await sessionController?.browseRefresh(hierarchy: selectedHierarchy, zoneOrOutputID: selectedZoneID)
             } catch {
                 errorState = ErrorState(title: "Refresh Failed", message: error.localizedDescription)
             }
@@ -527,11 +507,11 @@ final class AppModel {
         )
         Task {
             do {
-                try await bridge?.send("browse.loadPage", params: BrowseLoadPageParams(
+                try await sessionController?.browseLoadPage(
                     hierarchy: selectedHierarchy,
                     offset: offset,
                     count: count
-                ))
+                )
             } catch {
                 activeBrowseLoadOffsets.remove(offset)
                 errorState = ErrorState(title: "Page Load Failed", message: error.localizedDescription)
@@ -586,34 +566,27 @@ final class AppModel {
 
         Task {
             do {
-                guard let bridge else {
+                guard let sessionController else {
                     return
                 }
 
                 if item.hint == "action",
                    preferredActionTitles.contains(where: { $0.caseInsensitiveCompare("Play Now") == .orderedSame }) {
-                    try await bridge.send(
-                        "browse.performAction",
-                        params: BrowsePerformActionParams(
-                            hierarchy: selectedHierarchy,
-                            sessionKey: "\(selectedHierarchy.rawValue):\(itemKey)",
-                            itemKey: itemKey,
-                            zoneOrOutputID: selectedZoneID,
-                            contextItemKey: nil,
-                            actionTitle: nil
-                        )
+                    try await sessionController.browsePerformAction(
+                        hierarchy: selectedHierarchy,
+                        sessionKey: "\(selectedHierarchy.rawValue):\(itemKey)",
+                        itemKey: itemKey,
+                        zoneOrOutputID: selectedZoneID,
+                        contextItemKey: nil,
+                        actionTitle: nil
                     )
                     return
                 }
 
-                let menu = try await bridge.request(
-                    "browse.contextActions",
-                    params: BrowseContextActionsParams(
-                        hierarchy: selectedHierarchy,
-                        itemKey: itemKey,
-                        zoneOrOutputID: selectedZoneID
-                    ),
-                    as: BrowseActionMenuResult.self
+                let menu = try await sessionController.browseContextActions(
+                    hierarchy: selectedHierarchy,
+                    itemKey: itemKey,
+                    zoneOrOutputID: selectedZoneID
                 )
 
                 guard let action = preferredActionTitles.compactMap({ title in
@@ -626,32 +599,26 @@ final class AppModel {
                     return
                 }
 
-                try await bridge.send(
-                    "browse.performAction",
-                    params: BrowsePerformActionParams(
-                        hierarchy: selectedHierarchy,
-                        sessionKey: menu.sessionKey,
-                        itemKey: itemKey,
-                        zoneOrOutputID: selectedZoneID,
-                        contextItemKey: itemKey,
-                        actionTitle: action.title
-                    )
+                try await sessionController.browsePerformAction(
+                    hierarchy: selectedHierarchy,
+                    sessionKey: menu.sessionKey,
+                    itemKey: itemKey,
+                    zoneOrOutputID: selectedZoneID,
+                    contextItemKey: itemKey,
+                    actionTitle: action.title
                 )
             } catch {
                 if item.hint == "action",
                    preferredActionTitles.contains(where: { $0.caseInsensitiveCompare("Play Now") == .orderedSame }),
                    error.localizedDescription.contains("No action list available for the selected item.") {
                     do {
-                        try await bridge?.send(
-                            "browse.performAction",
-                            params: BrowsePerformActionParams(
-                                hierarchy: selectedHierarchy,
-                                sessionKey: "\(selectedHierarchy.rawValue):\(itemKey)",
-                                itemKey: itemKey,
-                                zoneOrOutputID: selectedZoneID,
-                                contextItemKey: nil,
-                                actionTitle: nil
-                            )
+                        try await sessionController?.browsePerformAction(
+                            hierarchy: selectedHierarchy,
+                            sessionKey: "\(selectedHierarchy.rawValue):\(itemKey)",
+                            itemKey: itemKey,
+                            zoneOrOutputID: selectedZoneID,
+                            contextItemKey: nil,
+                            actionTitle: nil
                         )
                         return
                     } catch {
@@ -683,12 +650,12 @@ final class AppModel {
 
         Task {
             do {
-                try await bridge?.send("browse.submitInput", params: BrowseSubmitInputParams(
+                try await sessionController?.browseSubmitInput(
                     hierarchy: selectedHierarchy,
                     itemKey: itemKey,
                     input: value,
                     zoneOrOutputID: selectedZoneID
-                ))
+                )
             } catch {
                 errorState = ErrorState(title: "Search Failed", message: error.localizedDescription)
             }
@@ -710,10 +677,7 @@ final class AppModel {
 
         Task {
             do {
-                try await bridge?.send("transport.command", params: TransportCommandParams(
-                    zoneOrOutputID: selectedZoneID,
-                    command: command
-                ))
+                try await sessionController?.transportCommand(zoneOrOutputID: selectedZoneID, command: command)
             } catch {
                 errorState = ErrorState(title: "Transport Failed", message: error.localizedDescription)
             }
@@ -737,11 +701,11 @@ final class AppModel {
 
         Task {
             do {
-                try await bridge?.send("transport.seek", params: TransportSeekParams(
+                try await sessionController?.transportSeek(
                     zoneOrOutputID: selectedZoneID,
                     how: "absolute",
                     seconds: targetSeconds
-                ))
+                )
             } catch {
                 pendingSeekStates.removeValue(forKey: selectedZoneID)
                 errorState = ErrorState(title: "Seek Failed", message: error.localizedDescription)
@@ -794,10 +758,7 @@ final class AppModel {
 
         Task {
             do {
-                try await bridge?.send("transport.mute", params: TransportMuteParams(
-                    outputID: output.outputID,
-                    how: targetMode
-                ))
+                try await sessionController?.transportMute(outputID: output.outputID, how: targetMode)
             } catch {
                 errorState = ErrorState(title: "Mute Failed", message: error.localizedDescription)
             }
@@ -841,10 +802,10 @@ final class AppModel {
 
         Task {
             do {
-                try await bridge?.send("queue.playFromHere", params: QueuePlayFromHereParams(
+                try await sessionController?.queuePlayFromHere(
                     zoneOrOutputID: selectedZoneID,
                     queueItemID: item.queueItemID
-                ))
+                )
             } catch {
                 errorState = ErrorState(title: "Queue Playback Failed", message: error.localizedDescription)
             }
@@ -934,25 +895,15 @@ final class AppModel {
         }
 
         do {
-            let result: ImageFetchedResult
-            if NativeBridgeRuntimeConfiguration.isEnabled, let currentCore {
-                result = try await nativeImageClient.fetchImage(
-                    imageKey: imageKey,
-                    width: width,
-                    height: height,
-                    format: "image/jpeg",
-                    core: currentCore
-                )
-            } else {
-                guard let bridge else {
-                    return nil
-                }
-                result = try await bridge.request(
-                    "image.fetch",
-                    params: ImageFetchParams(imageKey: imageKey, width: width, height: height, format: "image/jpeg"),
-                    as: ImageFetchedResult.self
-                )
+            guard let sessionController else {
+                return nil
             }
+            let result = try await sessionController.fetchArtwork(
+                imageKey: imageKey,
+                width: width,
+                height: height,
+                format: "image/jpeg"
+            )
             guard let image = NSImage(contentsOfFile: result.localURL) else {
                 return nil
             }
@@ -982,27 +933,15 @@ final class AppModel {
         max(width * height * 4, 1)
     }
 
-    private func handleBridgeMessage(_ message: BridgeInboundMessage) {
-        switch message {
-        case let .response(_, _, error):
-            MacaroonDebugLogger.logApp(
-                "app.bridge_response",
-                details: ["has_error": error == nil ? "false" : "true"]
-            )
-            if let error {
-                lastBridgeError = error
-                errorState = ErrorState(title: "Bridge Error", message: error.message)
-            }
-        case let .event(event):
-            MacaroonDebugLogger.logApp(
-                "app.bridge_event",
-                details: bridgeEventSummary(event)
-            )
-            apply(event)
-        }
+    private func handleSessionEvent(_ event: RoonSessionEvent) {
+        MacaroonDebugLogger.logApp(
+            "app.session_event",
+            details: sessionEventSummary(event)
+        )
+        apply(event)
     }
 
-    private func apply(_ event: BridgeEventEnvelope) {
+    private func apply(_ event: RoonSessionEvent) {
         switch event {
         case let .connectionChanged(payload):
             switch payload.status {
@@ -1120,16 +1059,8 @@ final class AppModel {
         }
     }
 
-    private static func defaultBridgeFactory() -> BridgeService {
-        if NativeBridgeRuntimeConfiguration.isEnabled {
-            return NativeRoonBridgeService()
-        }
-
-        let helperURL = Bundle.module.url(forResource: "launch-helper", withExtension: "sh", subdirectory: "Resources")
-        if let helperURL {
-            return HelperProcessController(launchPath: helperURL)
-        }
-        return MockBridgeService()
+    private static func defaultSessionControllerFactory() -> RoonSessionController {
+        NativeRoonSessionController()
     }
 
     private func loadBrowseServicesIfNeeded() {
@@ -1140,10 +1071,10 @@ final class AppModel {
 
         Task {
             do {
-                guard let bridge else {
+                guard let sessionController else {
                     return
                 }
-                let result = try await bridge.request("browse.services", params: EmptyParams(), as: BrowseServicesResult.self)
+                let result = try await sessionController.browseServices()
                 browseServices = result.services.sorted {
                     $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
                 }
@@ -1279,9 +1210,7 @@ final class AppModel {
         return page.list.title.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare("Search") == .orderedSame
     }
 
-    private var supportsStructuredSearchResults: Bool {
-        bridge is NativeRoonBridgeService || isUsingMockBridge
-    }
+    private var supportsStructuredSearchResults: Bool { true }
 
     private func loadSearchSections(for query: String) {
         let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1298,19 +1227,13 @@ final class AppModel {
             }
 
             do {
-                let results = try await bridge?.request(
-                    "browse.searchSections",
-                    params: BrowseSearchSectionsParams(
-                        query: query,
-                        zoneOrOutputID: selectedZoneID
-                    ),
-                    as: SearchResultsPage.self
-                )
-
-                guard Task.isCancelled == false,
+                guard let results = try await sessionController?.browseSearchSections(
+                    query: query,
+                    zoneOrOutputID: selectedZoneID
+                ),
+                      Task.isCancelled == false,
                       selectedHierarchy == .search,
-                      searchText.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare(query) == .orderedSame,
-                      let results
+                      searchText.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare(query) == .orderedSame
                 else {
                     return
                 }
@@ -1356,11 +1279,7 @@ final class AppModel {
 
     private func sendVolumeChange(outputID: String, how: VolumeChangeMode, value: Double) async {
         do {
-            try await bridge?.send("transport.changeVolume", params: TransportVolumeParams(
-                outputID: outputID,
-                how: how,
-                value: value
-            ))
+            try await sessionController?.transportChangeVolume(outputID: outputID, how: how, value: value)
         } catch {
             errorState = ErrorState(title: "Volume Change Failed", message: error.localizedDescription)
         }
@@ -1389,7 +1308,7 @@ final class AppModel {
         zones[index].nowPlaying?.seekPosition = seconds
     }
 
-    private func bridgeEventSummary(_ event: BridgeEventEnvelope) -> [String: String] {
+    private func sessionEventSummary(_ event: RoonSessionEvent) -> [String: String] {
         switch event {
         case let .connectionChanged(payload):
             let statusSummary: String
@@ -1540,11 +1459,11 @@ final class AppModel {
 
             Task {
                 do {
-                    try await bridge?.send("browse.open", params: BrowseOpenParams(
+                    try await sessionController?.browseOpen(
                         hierarchy: hierarchy,
                         zoneOrOutputID: selectedZoneID,
                         itemKey: itemKey
-                    ))
+                    )
                     commitNavigation(action, historyMode: historyMode)
                 } catch {
                     errorState = ErrorState(title: "Browse Item Failed", message: error.localizedDescription)
@@ -1561,10 +1480,7 @@ final class AppModel {
 
             Task {
                 do {
-                    try await bridge?.send("browse.openService", params: BrowseOpenServiceParams(
-                        title: title,
-                        zoneOrOutputID: selectedZoneID
-                    ))
+                    try await sessionController?.browseOpenService(title: title, zoneOrOutputID: selectedZoneID)
                     commitNavigation(action, historyMode: historyMode)
                 } catch {
                     errorState = ErrorState(title: "Browse Failed", message: error.localizedDescription)
@@ -1583,10 +1499,7 @@ final class AppModel {
 
             Task {
                 do {
-                    try await bridge?.send("browse.home", params: BrowseHomeParams(
-                        hierarchy: .search,
-                        zoneOrOutputID: selectedZoneID
-                    ))
+                    try await sessionController?.browseHome(hierarchy: .search, zoneOrOutputID: selectedZoneID)
                     commitNavigation(action, historyMode: historyMode)
                 } catch {
                     errorState = ErrorState(title: "Search Failed", message: error.localizedDescription)
@@ -1601,12 +1514,12 @@ final class AppModel {
 
             Task {
                 do {
-                    try await bridge?.send("browse.openSearchMatch", params: BrowseOpenSearchMatchParams(
+                    try await sessionController?.browseOpenSearchMatch(
                         query: query,
                         categoryTitle: categoryTitle,
                         matchTitle: matchTitle,
                         zoneOrOutputID: selectedZoneID
-                    ))
+                    )
                     commitNavigation(action, historyMode: historyMode)
                 } catch {
                     let title = categoryTitle == "Artists" ? "Artist Navigation Failed" : "Album Navigation Failed"

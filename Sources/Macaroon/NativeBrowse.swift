@@ -1279,14 +1279,14 @@ actor NativeBrowseClient {
 
     private func decodeBody<T: Decodable>(_ type: T.Type, from message: MooMessageEnvelope) throws -> T {
         guard let body = message.body else {
-            throw BridgeRuntimeError.emptyResponse
+            throw NativeSessionError.emptyResponse
         }
         return try JSONDecoder().decode(T.self, from: body)
     }
 
     private func require<T>(_ value: T?) throws -> T {
         guard let value else {
-            throw BridgeRuntimeError.emptyResponse
+            throw NativeSessionError.emptyResponse
         }
         return value
     }

@@ -2,71 +2,42 @@ import Foundation
 import Testing
 @testable import Macaroon
 
-@Suite("NativeBridgeServiceTests")
-struct NativeBridgeServiceTests {
-    @Test
-    @MainActor
-    func requestThrowsNotImplemented() async {
-        let service = NativeRoonBridgeService()
-
-        await #expect(throws: NativeBridgeError.notImplemented(method: "connect.auto")) {
-            _ = try await service.request(
-                "connect.auto",
-                params: ConnectAutoParams(persistedState: .empty),
-                as: EmptyResult.self
-            )
-        }
-    }
-
-    @Test
-    func nativeBridgeDefaultsOn() {
-        #expect(NativeBridgeRuntimeConfiguration.isEnabled == true)
-    }
-
+@Suite("NativeSessionControllerTests")
+struct NativeSessionControllerTests {
     @Test
     @MainActor
     func imageFetchFailsWithoutConnectedCore() async {
-        let service = NativeRoonBridgeService()
+        let controller = NativeRoonSessionController()
 
         await #expect(throws: NativeImageError.missingCoreEndpoint) {
-            _ = try await service.request(
-                "image.fetch",
-                params: ImageFetchParams(
-                    imageKey: "image-key",
-                    width: 104,
-                    height: 104,
-                    format: "image/jpeg"
-                ),
-                as: ImageFetchedResult.self
+            _ = try await controller.fetchArtwork(
+                imageKey: "image-key",
+                width: 104,
+                height: 104,
+                format: "image/jpeg"
             )
         }
     }
 
     @Test
     @MainActor
-    func transportCommandRoutesThroughBridgeAfterConnect() async throws {
+    func transportCommandRoutesThroughSessionAfterConnect() async throws {
         let transport = MockNativeMooTransport(messages: [
             try registryInfoMessage(requestID: "0"),
             try registryRegisteredMessage(requestID: "1"),
-            try bridgeSuccessMessage(requestID: "2")
+            try successMessage(requestID: "2")
         ])
         let registryClient = NativeRegistryClient(transportFactory: { transport })
-        let service = NativeRoonBridgeService(registryClient: registryClient)
+        let controller = NativeRoonSessionController(registryClient: registryClient)
 
-        try await service.send(
-            "connect.manual",
-            params: ConnectManualParams(
-                host: "10.0.7.148",
-                port: 9330,
-                persistedState: .empty
-            )
+        try await controller.connectManually(
+            host: "10.0.7.148",
+            port: 9330,
+            persistedState: .empty
         )
-        try await service.send(
-            "transport.command",
-            params: TransportCommandParams(
-                zoneOrOutputID: "zone-1",
-                command: .playPause
-            )
+        try await controller.transportCommand(
+            zoneOrOutputID: "zone-1",
+            command: .playPause
         )
 
         let sent = try await decodedSentMessages(from: transport)
@@ -95,44 +66,33 @@ struct NativeBridgeServiceTests {
             },
             cacheStore: cacheStore
         )
-        let service = NativeRoonBridgeService(
+        let controller = NativeRoonSessionController(
             registryClient: registryClient,
             imageClient: imageClient
         )
 
-        try await service.send(
-            "connect.manual",
-            params: ConnectManualParams(
-                host: "10.0.7.148",
-                port: 9330,
-                persistedState: .empty
-            )
+        try await controller.connectManually(
+            host: "10.0.7.148",
+            port: 9330,
+            persistedState: .empty
         )
 
-        let result = try await service.request(
-            "image.fetch",
-            params: ImageFetchParams(
+        let result = try await controller.fetchArtwork(
+            imageKey: "image-key",
+            width: 104,
+            height: 104,
+            format: "image/jpeg"
+        )
+        #expect(FileManager.default.fileExists(atPath: result.localURL))
+
+        await controller.disconnect()
+
+        await #expect(throws: NativeImageError.missingCoreEndpoint) {
+            _ = try await controller.fetchArtwork(
                 imageKey: "image-key",
                 width: 104,
                 height: 104,
                 format: "image/jpeg"
-            ),
-            as: ImageFetchedResult.self
-        )
-        #expect(FileManager.default.fileExists(atPath: result.localURL))
-
-        try await service.send("core.disconnect", params: DisconnectParams())
-
-        await #expect(throws: NativeImageError.missingCoreEndpoint) {
-            _ = try await service.request(
-                "image.fetch",
-                params: ImageFetchParams(
-                    imageKey: "image-key",
-                    width: 104,
-                    height: 104,
-                    format: "image/jpeg"
-                ),
-                as: ImageFetchedResult.self
             )
         }
     }
@@ -151,31 +111,25 @@ struct NativeBridgeServiceTests {
             ])
         ])
         let registryClient = NativeRegistryClient(transportFactory: { transport })
-        let service = NativeRoonBridgeService(registryClient: registryClient)
+        let controller = NativeRoonSessionController(registryClient: registryClient)
 
-        var events: [BridgeEventEnvelope] = []
-        service.eventHandler = { message in
-            guard case let .event(event) = message else {
-                return
-            }
+        var events: [RoonSessionEvent] = []
+        controller.eventHandler = { event in
             events.append(event)
         }
 
-        try await service.send(
-            "connect.manual",
-            params: ConnectManualParams(
-                host: "10.0.7.148",
-                port: 9330,
-                persistedState: .empty
-            )
+        try await controller.connectManually(
+            host: "10.0.7.148",
+            port: 9330,
+            persistedState: .empty
         )
-        try await service.send(
-            "queue.subscribe",
-            params: QueueSubscribeParams(zoneOrOutputID: "zone-1", maxItemCount: 300)
+        try await controller.subscribeQueue(
+            zoneOrOutputID: "zone-1",
+            maxItemCount: 300
         )
-        try await service.send(
-            "queue.subscribe",
-            params: QueueSubscribeParams(zoneOrOutputID: "zone-2", maxItemCount: 300)
+        try await controller.subscribeQueue(
+            zoneOrOutputID: "zone-2",
+            maxItemCount: 300
         )
 
         await transport.pushIncoming(try MooCodec.encodeMessage(
@@ -238,25 +192,19 @@ struct NativeBridgeServiceTests {
             try zonesSubscribedMessage(requestID: "2")
         ])
         let registryClient = NativeRegistryClient(transportFactory: { transport })
-        let service = NativeRoonBridgeService(registryClient: registryClient)
+        let controller = NativeRoonSessionController(registryClient: registryClient)
 
-        var events: [BridgeEventEnvelope] = []
-        service.eventHandler = { message in
-            guard case let .event(event) = message else {
-                return
-            }
+        var events: [RoonSessionEvent] = []
+        controller.eventHandler = { event in
             events.append(event)
         }
 
-        try await service.send(
-            "connect.manual",
-            params: ConnectManualParams(
-                host: "10.0.7.148",
-                port: 9330,
-                persistedState: .empty
-            )
+        try await controller.connectManually(
+            host: "10.0.7.148",
+            port: 9330,
+            persistedState: .empty
         )
-        try await service.send("zones.subscribe", params: ZonesSubscribeParams())
+        try await controller.subscribeZones()
 
         await transport.pushIncoming(try MooCodec.encodeMessage(
             verb: .continue,
@@ -311,7 +259,7 @@ private func registryRegisteredMessage(requestID: String) throws -> Data {
     )
 }
 
-private func bridgeSuccessMessage(requestID: String) throws -> Data {
+private func successMessage(requestID: String) throws -> Data {
     try MooCodec.encodeMessage(
         verb: .complete,
         name: "Success",

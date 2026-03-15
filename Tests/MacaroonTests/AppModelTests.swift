@@ -8,8 +8,8 @@ import Testing
 struct AppModelTests {
     @Test
     func performPreferredActionDirectlyExecutesInternetRadioActionItems() async throws {
-        let bridge = RecordingBridgeService()
-        let model = AppModel(bridgeFactory: { bridge })
+        let controller = RecordingSessionController()
+        let model = AppModel(sessionControllerFactory: { controller })
         model.start()
         await Task.yield()
 
@@ -30,10 +30,9 @@ struct AppModelTests {
         await Task.yield()
         await Task.yield()
 
-        #expect(bridge.requestedMethods.isEmpty)
-        #expect(bridge.sentMethods.contains("browse.performAction"))
-        #expect(bridge.sentPerformActionParams == [
-            BrowsePerformActionParams(
+        #expect(controller.contextActionsCalls.isEmpty)
+        #expect(controller.performActionCalls == [
+            .init(
                 hierarchy: .internetRadio,
                 sessionKey: "internet_radio:514:5",
                 itemKey: "514:5",
@@ -62,19 +61,29 @@ struct AppModelTests {
             },
             cacheStore: cacheStore
         )
+        let controller = RecordingSessionController(imageFetcher: { imageKey, width, height, format in
+            try await imageClient.fetchImage(
+                imageKey: imageKey,
+                width: width,
+                height: height,
+                format: format,
+                core: CoreSummary(
+                    coreID: "core-1",
+                    displayName: "m1mini",
+                    displayVersion: "2.62",
+                    host: "10.0.7.148",
+                    port: 9330
+                )
+            )
+        })
         let model = AppModel(
-            bridgeFactory: { RecordingBridgeService() },
+            sessionControllerFactory: { controller },
             artworkCacheStore: cacheStore,
             nativeImageClient: imageClient,
             artworkSettingsStore: settingsStore
         )
-        model.currentCore = CoreSummary(
-            coreID: "core-1",
-            displayName: "m1mini",
-            displayVersion: "2.62",
-            host: "10.0.7.148",
-            port: 9330
-        )
+        model.start()
+        await Task.yield()
 
         let first = await model.loadArtwork(imageKey: "repeat-image", width: 44, height: 44)
         let second = await model.loadArtwork(imageKey: "repeat-image", width: 44, height: 44)
@@ -101,19 +110,29 @@ struct AppModelTests {
             },
             cacheStore: cacheStore
         )
+        let controller = RecordingSessionController(imageFetcher: { imageKey, width, height, format in
+            try await imageClient.fetchImage(
+                imageKey: imageKey,
+                width: width,
+                height: height,
+                format: format,
+                core: CoreSummary(
+                    coreID: "core-1",
+                    displayName: "m1mini",
+                    displayVersion: "2.62",
+                    host: "10.0.7.148",
+                    port: 9330
+                )
+            )
+        })
         let model = AppModel(
-            bridgeFactory: { RecordingBridgeService() },
+            sessionControllerFactory: { controller },
             artworkCacheStore: cacheStore,
             nativeImageClient: imageClient,
             artworkSettingsStore: settingsStore
         )
-        model.currentCore = CoreSummary(
-            coreID: "core-1",
-            displayName: "m1mini",
-            displayVersion: "2.62",
-            host: "10.0.7.148",
-            port: 9330
-        )
+        model.start()
+        await Task.yield()
 
         _ = await model.loadArtwork(imageKey: "clear-image", width: 44, height: 44)
         #expect(model.artworkCacheUsageBytes > 0)
@@ -128,30 +147,89 @@ struct AppModelTests {
 }
 
 @MainActor
-private final class RecordingBridgeService: BridgeService {
-    var eventHandler: (@MainActor (BridgeInboundMessage) -> Void)?
-    var requestedMethods: [String] = []
-    var sentMethods: [String] = []
-    var sentPerformActionParams: [BrowsePerformActionParams] = []
-
-    func start() async throws {}
-
-    func stop() async {}
-
-    func send<Params: Encodable>(_ method: String, params: Params) async throws {
-        sentMethods.append(method)
-        if let params = params as? BrowsePerformActionParams {
-            sentPerformActionParams.append(params)
-        }
+private final class RecordingSessionController: RoonSessionController {
+    struct PerformActionCall: Equatable {
+        var hierarchy: BrowseHierarchy
+        var sessionKey: String
+        var itemKey: String
+        var zoneOrOutputID: String?
+        var contextItemKey: String?
+        var actionTitle: String?
     }
 
-    func request<Params: Encodable, Result: Decodable>(
-        _ method: String,
-        params: Params,
-        as resultType: Result.Type
-    ) async throws -> Result {
-        requestedMethods.append(method)
-        throw NSError(domain: "RecordingBridgeService", code: 1)
+    typealias ImageFetcher = @MainActor @Sendable (String, Int, Int, String) async throws -> ImageFetchedResult
+
+    var eventHandler: (@MainActor (RoonSessionEvent) -> Void)?
+    var contextActionsCalls: [(BrowseHierarchy, String, String?)] = []
+    var performActionCalls: [PerformActionCall] = []
+    private let imageFetcher: ImageFetcher?
+
+    init(imageFetcher: ImageFetcher? = nil) {
+        self.imageFetcher = imageFetcher
+    }
+
+    func start() async throws {}
+    func stop() async {}
+    func connectAutomatically(persistedState: PersistedSessionState) async throws {}
+    func connectManually(host: String, port: Int, persistedState: PersistedSessionState) async throws {}
+    func disconnect() async {}
+    func subscribeZones() async throws {}
+    func subscribeQueue(zoneOrOutputID: String, maxItemCount: Int) async throws {}
+    func queuePlayFromHere(zoneOrOutputID: String, queueItemID: String) async throws {}
+    func browseHome(hierarchy: BrowseHierarchy, zoneOrOutputID: String?) async throws {}
+    func browseOpen(hierarchy: BrowseHierarchy, zoneOrOutputID: String?, itemKey: String?) async throws {}
+    func browseOpenService(title: String, zoneOrOutputID: String?) async throws {}
+    func browseBack(hierarchy: BrowseHierarchy, levels: Int, zoneOrOutputID: String?) async throws {}
+    func browseRefresh(hierarchy: BrowseHierarchy, zoneOrOutputID: String?) async throws {}
+    func browseLoadPage(hierarchy: BrowseHierarchy, offset: Int, count: Int) async throws {}
+    func browseSubmitInput(hierarchy: BrowseHierarchy, itemKey: String, input: String, zoneOrOutputID: String?) async throws {}
+    func browseOpenSearchMatch(query: String, categoryTitle: String, matchTitle: String, zoneOrOutputID: String?) async throws {}
+    func browseServices() async throws -> BrowseServicesResult { BrowseServicesResult(services: []) }
+    func browseSearchSections(query: String, zoneOrOutputID: String?) async throws -> SearchResultsPage {
+        SearchResultsPage(query: query, topHit: nil, sections: [])
+    }
+
+    func browseContextActions(hierarchy: BrowseHierarchy, itemKey: String, zoneOrOutputID: String?) async throws -> BrowseActionMenuResult {
+        contextActionsCalls.append((hierarchy, itemKey, zoneOrOutputID))
+        throw NSError(domain: "RecordingSessionController", code: 1)
+    }
+
+    func browsePerformAction(
+        hierarchy: BrowseHierarchy,
+        sessionKey: String,
+        itemKey: String,
+        zoneOrOutputID: String?,
+        contextItemKey: String?,
+        actionTitle: String?
+    ) async throws {
+        performActionCalls.append(.init(
+            hierarchy: hierarchy,
+            sessionKey: sessionKey,
+            itemKey: itemKey,
+            zoneOrOutputID: zoneOrOutputID,
+            contextItemKey: contextItemKey,
+            actionTitle: actionTitle
+        ))
+    }
+
+    func browsePerformSearchMatchAction(
+        query: String,
+        categoryTitle: String,
+        matchTitle: String,
+        preferredActionTitles: [String],
+        zoneOrOutputID: String?
+    ) async throws {}
+
+    func transportCommand(zoneOrOutputID: String, command: TransportCommand) async throws {}
+    func transportSeek(zoneOrOutputID: String, how: String, seconds: Double) async throws {}
+    func transportChangeVolume(outputID: String, how: VolumeChangeMode, value: Double) async throws {}
+    func transportMute(outputID: String, how: OutputMuteMode) async throws {}
+
+    func fetchArtwork(imageKey: String, width: Int, height: Int, format: String) async throws -> ImageFetchedResult {
+        guard let imageFetcher else {
+            throw NSError(domain: "RecordingSessionController", code: 2)
+        }
+        return try await imageFetcher(imageKey, width, height, format)
     }
 }
 

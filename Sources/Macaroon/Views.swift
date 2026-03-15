@@ -273,7 +273,7 @@ private struct SidebarView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(model.connectionStatus.summary)
                     .font(.callout.weight(.semibold))
-                Text(model.helperStatus)
+                Text(model.sessionStatusText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -1545,8 +1545,6 @@ struct SettingsView: View {
     @State private var cacheLimitMegabytes = 0.0
 
     var body: some View {
-        @Bindable var model = model
-
         Form {
             Section("Artwork Cache") {
                 VStack(alignment: .leading, spacing: 8) {
@@ -1588,17 +1586,6 @@ struct SettingsView: View {
                 .onChange(of: model.artworkCacheLimitBytes) { _, newValue in
                     cacheLimitMegabytes = Double(newValue) / (1024 * 1024)
                 }
-            }
-
-            Section("Connection") {
-                AutofillDisabledTextField(text: $model.manualConnect.host, placeholder: "Host")
-                    .frame(height: 22)
-                TextField("Port", value: $model.manualConnect.port, format: .number)
-                Toggle("Use mock bridge", isOn: $model.isUsingMockBridge)
-                    .disabled(true)
-                Text("The app launches the bundled helper when present, or falls back to an in-process mock bridge for UI development.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
         }
         .padding()

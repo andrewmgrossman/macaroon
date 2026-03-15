@@ -334,7 +334,7 @@ actor RoonWebSocketTransport {
 
     func send(_ data: Data) async throws {
         guard let task else {
-            throw BridgeRuntimeError.processUnavailable
+            throw NativeSessionTransportError.unavailable
         }
 
         try await task.send(.data(data))
@@ -342,7 +342,7 @@ actor RoonWebSocketTransport {
 
     func receive() async throws -> Data {
         guard let task else {
-            throw BridgeRuntimeError.processUnavailable
+            throw NativeSessionTransportError.unavailable
         }
 
         let message = try await task.receive()
@@ -358,7 +358,7 @@ actor RoonWebSocketTransport {
 
     func sendPing() async throws {
         guard let task else {
-            throw BridgeRuntimeError.processUnavailable
+            throw NativeSessionTransportError.unavailable
         }
         MacaroonDebugLogger.logProtocol("websocket.ping")
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in

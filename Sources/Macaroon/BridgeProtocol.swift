@@ -1,111 +1,6 @@
 import Foundation
 
-struct BridgeRequest<Params: Encodable>: Encodable {
-    let id: UUID
-    let method: String
-    let params: Params
-}
-
 struct EmptyParams: Codable, Equatable, Sendable {}
-
-struct ConnectAutoParams: Codable, Equatable, Sendable {
-    var persistedState: PersistedSessionState
-}
-
-struct ConnectManualParams: Codable, Equatable, Sendable {
-    var host: String
-    var port: Int
-    var persistedState: PersistedSessionState
-}
-
-struct DisconnectParams: Codable, Equatable, Sendable {}
-
-struct ZonesSubscribeParams: Codable, Equatable, Sendable {}
-
-struct QueueSubscribeParams: Codable, Equatable, Sendable {
-    var zoneOrOutputID: String
-    var maxItemCount: Int
-}
-
-struct QueuePlayFromHereParams: Codable, Equatable, Sendable {
-    var zoneOrOutputID: String
-    var queueItemID: String
-}
-
-struct BrowseOpenParams: Codable, Equatable, Sendable {
-    var hierarchy: BrowseHierarchy
-    var zoneOrOutputID: String?
-    var itemKey: String?
-}
-
-struct BrowseOpenServiceParams: Codable, Equatable, Sendable {
-    var title: String
-    var zoneOrOutputID: String?
-}
-
-struct BrowseBackParams: Codable, Equatable, Sendable {
-    var hierarchy: BrowseHierarchy
-    var levels: Int
-    var zoneOrOutputID: String?
-}
-
-struct BrowseHomeParams: Codable, Equatable, Sendable {
-    var hierarchy: BrowseHierarchy
-    var zoneOrOutputID: String?
-}
-
-struct BrowseRefreshParams: Codable, Equatable, Sendable {
-    var hierarchy: BrowseHierarchy
-    var zoneOrOutputID: String?
-}
-
-struct BrowseLoadPageParams: Codable, Equatable, Sendable {
-    var hierarchy: BrowseHierarchy
-    var offset: Int
-    var count: Int
-}
-
-struct BrowseSubmitInputParams: Codable, Equatable, Sendable {
-    var hierarchy: BrowseHierarchy
-    var itemKey: String
-    var input: String
-    var zoneOrOutputID: String?
-}
-
-struct BrowseContextActionsParams: Codable, Equatable, Sendable {
-    var hierarchy: BrowseHierarchy
-    var itemKey: String
-    var zoneOrOutputID: String?
-}
-
-struct BrowsePerformActionParams: Codable, Equatable, Sendable {
-    var hierarchy: BrowseHierarchy
-    var sessionKey: String
-    var itemKey: String
-    var zoneOrOutputID: String?
-    var contextItemKey: String?
-    var actionTitle: String?
-}
-
-struct BrowseOpenSearchMatchParams: Codable, Equatable, Sendable {
-    var query: String
-    var categoryTitle: String
-    var matchTitle: String
-    var zoneOrOutputID: String?
-}
-
-struct BrowseSearchSectionsParams: Codable, Equatable, Sendable {
-    var query: String
-    var zoneOrOutputID: String?
-}
-
-struct BrowsePerformSearchMatchActionParams: Codable, Equatable, Sendable {
-    var query: String
-    var categoryTitle: String
-    var matchTitle: String
-    var preferredActionTitles: [String]
-    var zoneOrOutputID: String?
-}
 
 enum TransportCommand: String, Codable, Equatable, Sendable {
     case playPause = "playpause"
@@ -114,11 +9,6 @@ enum TransportCommand: String, Codable, Equatable, Sendable {
     case stop
     case next
     case previous
-}
-
-struct TransportCommandParams: Codable, Equatable, Sendable {
-    var zoneOrOutputID: String
-    var command: TransportCommand
 }
 
 enum VolumeChangeMode: String, Codable, Equatable, Sendable {
@@ -131,52 +21,6 @@ enum OutputMuteMode: String, Codable, Equatable, Sendable {
     case mute
     case unmute
 }
-
-struct TransportSeekParams: Codable, Equatable, Sendable {
-    var zoneOrOutputID: String
-    var how: String
-    var seconds: Double
-}
-
-struct TransportVolumeParams: Codable, Equatable, Sendable {
-    var outputID: String
-    var how: VolumeChangeMode
-    var value: Double
-}
-
-struct TransportMuteParams: Codable, Equatable, Sendable {
-    var outputID: String
-    var how: OutputMuteMode
-}
-
-struct ImageFetchParams: Codable, Equatable, Sendable {
-    var imageKey: String
-    var width: Int
-    var height: Int
-    var format: String
-}
-
-struct PersistedStateParams: Codable, Equatable, Sendable {
-    var persistedState: PersistedSessionState
-}
-
-struct BridgeResponse<Result: Decodable>: Decodable {
-    var id: UUID
-    var result: Result?
-    var error: BridgeErrorPayload?
-}
-
-struct BridgeEvent<Payload: Decodable>: Decodable {
-    var event: String
-    var payload: Payload
-}
-
-struct BridgeErrorPayload: Codable, Equatable, Error, Sendable {
-    var code: String
-    var message: String
-}
-
-struct EmptyResult: Codable, Equatable, Sendable {}
 
 struct ConnectionChangedEvent: Codable, Equatable, Sendable {
     var status: ConnectionStatusPayload

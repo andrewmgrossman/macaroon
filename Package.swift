@@ -26,7 +26,7 @@ let package = Package(
             name: "Macaroon",
             path: "Sources/Macaroon",
             resources: [
-                .copy("Resources")
+                .copy("Resources/AppIcon.png")
             ],
             swiftSettings: macaroonSwiftSettings
         ),
