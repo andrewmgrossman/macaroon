@@ -61,16 +61,20 @@ struct RootView: View {
             }
 
             if DebugLoggingConfiguration.isCompiled {
-                ToolbarItem(placement: .principal) {
+                ToolbarItem(placement: .automatic) {
                     ConnectionStatusPill()
                 }
             }
 
-            ToolbarItem(placement: .primaryAction) {
-                SearchToolbarField()
+            ToolbarItem(placement: .principal) {
+                HStack {
+                    Spacer()
+                    SearchToolbarField()
+                }
+                .frame(maxWidth: .infinity)
             }
 
-            ToolbarItem(placement: .confirmationAction) {
+            ToolbarItem(placement: .primaryAction) {
                 Button {
                     model.toggleQueueSidebar()
                 } label: {
