@@ -92,3 +92,4 @@ rm -rf "$APP_DIR"
 mv "$STAGING_DIR" "$APP_DIR"
 
 echo "Built $APP_DIR"
+open "$APP_DIR"
