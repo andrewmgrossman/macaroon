@@ -193,6 +193,113 @@ struct AppModelTests {
         #expect(controller.browseHomeCalls == [.init(hierarchy: .search, zoneOrOutputID: "zone-1")])
         #expect(model.errorState == nil)
     }
+
+    @Test
+    func loadWikipediaLoadsArtistArticleWithoutBlockingOrGlobalError() async throws {
+        let controller = RecordingSessionController()
+        let cacheStore = WikipediaCacheStore(
+            directoryURL: URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+                .appendingPathComponent("macaroon-wikipedia-\(UUID().uuidString)", isDirectory: true)
+        )
+        let client = WikipediaClient(fetchData: wikipediaStubFetchData(), cacheStore: cacheStore)
+        let model = AppModel(
+            sessionControllerFactory: { controller },
+            wikipediaClient: client
+        )
+
+        model.loadWikipedia(for: .artist(name: "Nirvana"))
+        let loadedState = await waitForWikipediaState(
+            in: model,
+            target: .artist(name: "Nirvana"),
+            timeoutMilliseconds: 500
+        )
+
+        guard case let .loaded(article) = loadedState else {
+            Issue.record("Expected Wikipedia article to load for artist")
+            return
+        }
+
+        #expect(article.pageTitle == "Nirvana")
+        #expect(model.errorState == nil)
+    }
+
+    @Test
+    func toggleWikipediaExpansionChangesState() async throws {
+        let model = AppModel(sessionControllerFactory: { RecordingSessionController() })
+        let target = WikipediaLookupTarget.album(title: "Sea Change", artist: "Beck")
+
+        #expect(model.isWikipediaExpanded(for: target) == false)
+        model.toggleWikipediaExpansion(for: target)
+        #expect(model.isWikipediaExpanded(for: target) == true)
+        model.toggleWikipediaExpansion(for: target)
+        #expect(model.isWikipediaExpanded(for: target) == false)
+    }
+
+    @Test
+    func cancelWikipediaLoadIgnoresStaleResult() async throws {
+        let controller = RecordingSessionController()
+        let cacheStore = WikipediaCacheStore(
+            directoryURL: URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+                .appendingPathComponent("macaroon-wikipedia-\(UUID().uuidString)", isDirectory: true)
+        )
+        let client = WikipediaClient(
+            fetchData: { url in
+                try await Task.sleep(for: .milliseconds(200))
+                return try await wikipediaStubFetchData()(url)
+            },
+            cacheStore: cacheStore
+        )
+        let model = AppModel(
+            sessionControllerFactory: { controller },
+            wikipediaClient: client
+        )
+        let target = WikipediaLookupTarget.artist(name: "Nirvana")
+
+        model.loadWikipedia(for: target)
+        model.cancelWikipediaLoad(for: target)
+        try await Task.sleep(for: .milliseconds(260))
+
+        #expect(model.wikipediaState(for: target) == .idle)
+    }
+
+    @Test
+    func unavailableWikipediaResultDoesNotRaiseGlobalError() async throws {
+        let controller = RecordingSessionController()
+        let cacheStore = WikipediaCacheStore(
+            directoryURL: URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+                .appendingPathComponent("macaroon-wikipedia-\(UUID().uuidString)", isDirectory: true)
+        )
+        let client = WikipediaClient(
+            fetchData: { url in
+                let action = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                    .queryItems?
+                    .first(where: { $0.name == "list" })?
+                    .value
+                if action == "search" {
+                    return """
+                    {"query":{"search":[]}}
+                    """.data(using: .utf8)!
+                }
+                return Data()
+            },
+            cacheStore: cacheStore
+        )
+        let model = AppModel(
+            sessionControllerFactory: { controller },
+            wikipediaClient: client
+        )
+        let target = WikipediaLookupTarget.artist(name: "No Match")
+
+        model.loadWikipedia(for: target)
+        let finalState = await waitForWikipediaState(
+            in: model,
+            target: target,
+            timeoutMilliseconds: 500
+        )
+
+        #expect(finalState == .unavailable)
+        #expect(model.errorState == nil)
+    }
 }
 
 @MainActor
@@ -336,4 +443,93 @@ actor AppModelLockedCounter {
     func increment() {
         value += 1
     }
+}
+
+private func wikipediaStubFetchData() -> WikipediaFetchDataClosure {
+    { url in
+        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        let queryItems = components?.queryItems ?? []
+        let list = queryItems.first(where: { $0.name == "list" })?.value
+        let titles = queryItems.first(where: { $0.name == "titles" })?.value
+
+        if list == "search" {
+            let query = queryItems.first(where: { $0.name == "srsearch" })?.value ?? ""
+            if query.contains("Nirvana") {
+                return """
+                {"query":{"search":[{"title":"Nirvana"}]}}
+                """.data(using: .utf8)!
+            }
+
+            if query.contains("Sea Change") {
+                return """
+                {"query":{"search":[{"title":"Sea Change"}]}}
+                """.data(using: .utf8)!
+            }
+
+            return """
+            {"query":{"search":[]}}
+            """.data(using: .utf8)!
+        }
+
+        switch titles {
+        case "Nirvana":
+            return """
+            {
+              "query": {
+                "pages": [
+                  {
+                    "pageid": 1,
+                    "title": "Nirvana",
+                    "fullurl": "https://en.wikipedia.org/wiki/Nirvana_(band)",
+                    "extract": "Nirvana was an American rock band formed in Aberdeen, Washington, in 1987. The band consisted of Kurt Cobain, Krist Novoselic and Dave Grohl.",
+                    "categories": [
+                      { "title": "Category:American rock music groups" }
+                    ]
+                  }
+                ]
+              }
+            }
+            """.data(using: .utf8)!
+        case "Sea Change":
+            return """
+            {
+              "query": {
+                "pages": [
+                  {
+                    "pageid": 2,
+                    "title": "Sea Change",
+                    "fullurl": "https://en.wikipedia.org/wiki/Sea_Change",
+                    "extract": "Sea Change is the eighth studio album by Beck, released in 2002. It marked a shift toward a more introspective style.",
+                    "categories": [
+                      { "title": "Category:2002 albums" }
+                    ]
+                  }
+                ]
+              }
+            }
+            """.data(using: .utf8)!
+        default:
+            return """
+            {"query":{"pages":[]}}
+            """.data(using: .utf8)!
+        }
+    }
+}
+
+@MainActor
+private func waitForWikipediaState(
+    in model: AppModel,
+    target: WikipediaLookupTarget,
+    timeoutMilliseconds: Int
+) async -> WikipediaSectionState {
+    let deadline = Date().addingTimeInterval(Double(timeoutMilliseconds) / 1000)
+    var state = model.wikipediaState(for: target)
+    while Date() < deadline {
+        if state != .idle && state != .loading {
+            return state
+        }
+        try? await Task.sleep(for: .milliseconds(20))
+        state = model.wikipediaState(for: target)
+    }
+    return state
 }

@@ -8,6 +8,7 @@ private let miniPlayerReservedHeight: CGFloat = 118
 private let miniPlayerArtworkSize: CGFloat = 56
 private let detailHeaderArtworkSize: CGFloat = 220
 private let detailSectionSpacing: CGFloat = 26
+private let wikipediaCollapsedHeight: CGFloat = 190
 
 private struct ResettableScrollContainer<Content: View>: View {
     @Environment(AppModel.self) private var model
@@ -979,6 +980,10 @@ private struct AlbumDetailView: View {
                     Spacer(minLength: 0)
                 }
 
+                if let wikipediaTarget {
+                    WikipediaArticleSection(target: wikipediaTarget)
+                }
+
                 VStack(alignment: .leading, spacing: 14) {
                     VStack(spacing: 0) {
                         ForEach(1..<context.page.list.count, id: \.self) { index in
@@ -1027,6 +1032,15 @@ private struct AlbumDetailView: View {
     private var trackCount: Int {
         max(context.page.list.count - 1, 0)
     }
+
+    private var wikipediaTarget: WikipediaLookupTarget? {
+        guard let artistName = context.page.list.subtitle?.trimmingCharacters(in: .whitespacesAndNewlines),
+              artistName.isEmpty == false
+        else {
+            return nil
+        }
+        return .album(title: context.page.list.title, artist: artistName)
+    }
 }
 
 private struct ArtistDetailView: View {
@@ -1072,6 +1086,8 @@ private struct ArtistDetailView: View {
 
                     Spacer(minLength: 0)
                 }
+
+                WikipediaArticleSection(target: wikipediaTarget)
 
                 if albumCount > 0 {
                     VStack(alignment: .leading, spacing: 14) {
@@ -1132,6 +1148,10 @@ private struct ArtistDetailView: View {
         }
 
         return subtitle
+    }
+
+    private var wikipediaTarget: WikipediaLookupTarget {
+        .artist(name: context.page.list.title)
     }
 }
 
@@ -1230,6 +1250,242 @@ private struct PlaylistDetailView: View {
     private var trackCount: Int {
         max(context.page.list.count - 1, 0)
     }
+}
+
+private struct WikipediaArticleSection: View {
+    private enum WikipediaTextBlock: Hashable {
+        case heading(String)
+        case paragraph(String)
+
+        var text: String {
+            switch self {
+            case let .heading(text), let .paragraph(text):
+                return text
+            }
+        }
+    }
+
+    @Environment(AppModel.self) private var model
+    let target: WikipediaLookupTarget
+
+    @State private var measuredTextHeight: CGFloat = 0
+
+    var body: some View {
+        Group {
+            switch model.wikipediaState(for: target) {
+            case .idle, .loading:
+                loadingCard
+            case let .loaded(article):
+                loadedCard(article: article)
+            case .unavailable, .failed:
+                EmptyView()
+            }
+        }
+        .task(id: target.cacheKey) {
+            model.loadWikipedia(for: target)
+        }
+        .onDisappear {
+            model.cancelWikipediaLoad(for: target)
+        }
+    }
+
+    private var loadingCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(0..<5, id: \.self) { index in
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(Color(nsColor: .tertiarySystemFill))
+                        .frame(height: 11)
+                        .frame(maxWidth: index == 4 ? 240 : .infinity, alignment: .leading)
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: wikipediaCollapsedHeight, maxHeight: wikipediaCollapsedHeight, alignment: .topLeading)
+        }
+        .padding(18)
+        .background(sectionBackground)
+    }
+
+    private func loadedCard(article: WikipediaArticle) -> some View {
+        let expanded = model.isWikipediaExpanded(for: target)
+        let shouldShowToggle = measuredTextHeight > wikipediaCollapsedHeight + 8
+
+        return VStack(alignment: .leading, spacing: 14) {
+            textBody(article: article, expanded: expanded)
+                .background(
+                    GeometryReader { proxy in
+                        Color.clear
+                            .onAppear {
+                                updateMeasuredHeight(width: proxy.size.width, body: article.body)
+                            }
+                            .onChange(of: proxy.size.width) { _, newValue in
+                                updateMeasuredHeight(width: newValue, body: article.body)
+                            }
+                    }
+                )
+
+            if shouldShowToggle {
+                Button(expanded ? "Collapse" : "Expand") {
+                    model.toggleWikipediaExpansion(for: target)
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color.accentColor)
+            }
+        }
+        .padding(18)
+        .background(sectionBackground)
+    }
+
+    private func textBody(article: WikipediaArticle, expanded: Bool) -> some View {
+        ZStack(alignment: .bottom) {
+            if expanded {
+                wikipediaArticleContent(article)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                wikipediaArticleContent(article)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(height: wikipediaCollapsedHeight, alignment: .topLeading)
+                    .clipped()
+            }
+
+            if expanded == false && measuredTextHeight > wikipediaCollapsedHeight + 8 {
+                LinearGradient(
+                    colors: [
+                        Color.clear,
+                        Color(nsColor: .controlBackgroundColor).opacity(0.88),
+                        Color(nsColor: .controlBackgroundColor)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: 44)
+                .allowsHitTesting(false)
+            }
+        }
+    }
+
+    private func wikipediaArticleContent(_ article: WikipediaArticle) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            wikipediaParagraphView(article.body)
+
+            HStack(spacing: 6) {
+                Text("Source:")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+
+                Link("Wikipedia", destination: article.canonicalURL)
+                    .font(.system(size: 12, weight: .medium))
+            }
+        }
+    }
+
+    private var sectionBackground: some View {
+        RoundedRectangle(cornerRadius: 16, style: .continuous)
+            .fill(Color(nsColor: .controlBackgroundColor))
+            .overlay {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.35), lineWidth: 0.8)
+            }
+    }
+
+    private func updateMeasuredHeight(width: CGFloat, body: String) {
+        guard width > 0 else {
+            return
+        }
+
+        measuredTextHeight = Self.measureTextHeight(body, width: width)
+    }
+
+    private static func measureTextHeight(_ text: String, width: CGFloat) -> CGFloat {
+        let blocks = articleBlocks(text)
+        guard blocks.isEmpty == false else {
+            return 0
+        }
+
+        let blockHeights = blocks.reduce(CGFloat.zero) { partialResult, block in
+            let font: NSFont
+            switch block {
+            case .heading:
+                font = NSFont.systemFont(ofSize: 14, weight: .semibold)
+            case .paragraph:
+                font = NSFont.systemFont(ofSize: 14)
+            }
+
+            let attributedString = NSAttributedString(
+                string: block.text,
+                attributes: [.font: font]
+            )
+            let boundingRect = attributedString.boundingRect(
+                with: CGSize(width: width, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading]
+            )
+            return partialResult + ceil(boundingRect.height)
+        }
+
+        return blockHeights + CGFloat(max(blocks.count - 1, 0)) * Self.wikipediaParagraphSpacing
+    }
+
+    private func wikipediaParagraphView(_ text: String) -> some View {
+        VStack(alignment: .leading, spacing: Self.wikipediaParagraphSpacing) {
+            ForEach(Self.articleBlocks(text), id: \.self) { block in
+                switch block {
+                case let .heading(text):
+                    Text(text)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                case let .paragraph(text):
+                    Text(text)
+                        .font(.system(size: 14))
+                        .foregroundStyle(.primary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    private static func formattedWikipediaString(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
+    }
+
+    private static func articleBlocks(_ text: String) -> [WikipediaTextBlock] {
+        formattedWikipediaString(text)
+            .components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { $0.isEmpty == false }
+            .map { line in
+                if isWikipediaHeadingLine(line) {
+                    return .heading(line)
+                }
+                return .paragraph(line)
+            }
+    }
+
+    private static func isWikipediaHeadingLine(_ line: String) -> Bool {
+        guard line.count <= 80 else {
+            return false
+        }
+
+        if line.hasSuffix(".") || line.hasSuffix("!") || line.hasSuffix("?") || line.hasSuffix(":") {
+            return false
+        }
+
+        let words = line.split(whereSeparator: \.isWhitespace)
+        guard words.count > 0 && words.count <= 8 else {
+            return false
+        }
+
+        return true
+    }
+
+    private static let wikipediaParagraphSpacing: CGFloat = 12
 }
 
 private struct SearchResultsView: View {

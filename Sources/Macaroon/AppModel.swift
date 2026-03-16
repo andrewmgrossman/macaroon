@@ -84,6 +84,7 @@ final class AppModel {
     var dismissTransientUIRequestID = 0
     var browseScrollTargetIndex: Int?
     var browseScrollTargetRequestID = 0
+    var wikipediaStates: [String: WikipediaSectionState] = [:]
 
     var artworkCacheUsageDisplay: String {
         Self.byteCountFormatter.string(fromByteCount: Int64(artworkCacheUsageBytes))
@@ -107,6 +108,8 @@ final class AppModel {
     private let artworkCacheStore: ArtworkCacheStore
     @ObservationIgnored
     private let nativeImageClient: NativeImageClient
+    @ObservationIgnored
+    private let wikipediaClient: WikipediaClient
     @ObservationIgnored
     private let artworkCache = NSCache<NSString, NSImage>()
     @ObservationIgnored
@@ -149,6 +152,9 @@ final class AppModel {
     private var typeSelectResetTask: Task<Void, Never>?
     @ObservationIgnored
     private var typeSelectGeneration = 0
+    @ObservationIgnored
+    private var wikipediaLoadTasks: [String: Task<Void, Never>] = [:]
+    private var expandedWikipediaTargets: Set<String> = []
 
     private let browsePageSize = 100
     private let pendingSeekGraceInterval: TimeInterval = 2.0
@@ -164,6 +170,7 @@ final class AppModel {
         sessionControllerFactory: @escaping @MainActor () -> RoonSessionController = AppModel.defaultSessionControllerFactory,
         artworkCacheStore: ArtworkCacheStore = .shared,
         nativeImageClient: NativeImageClient? = nil,
+        wikipediaClient: WikipediaClient? = nil,
         artworkSettingsStore: ArtworkCacheSettingsStore = ArtworkCacheSettingsStore()
     ) {
         let artworkSettings = artworkSettingsStore.load()
@@ -171,6 +178,7 @@ final class AppModel {
         self.artworkSettingsStore = artworkSettingsStore
         self.artworkCacheStore = artworkCacheStore
         self.nativeImageClient = nativeImageClient ?? NativeImageClient(cacheStore: artworkCacheStore)
+        self.wikipediaClient = wikipediaClient ?? WikipediaClient()
         self.artworkCacheLimitBytes = artworkSettings.maxBytes
         self.selectedZoneID = UserDefaults.standard.string(forKey: preferredZoneIDDefaultsKey)
         configureArtworkMemoryCacheLimit()
@@ -988,6 +996,75 @@ final class AppModel {
         } catch {
             return nil
         }
+    }
+
+    func loadWikipedia(for target: WikipediaLookupTarget) {
+        let key = target.cacheKey
+
+        if wikipediaLoadTasks[key] != nil {
+            return
+        }
+
+        if case .loaded? = wikipediaStates[key] {
+            return
+        }
+
+        if case .unavailable? = wikipediaStates[key] {
+            return
+        }
+
+        wikipediaStates[key] = .loading
+
+        let client = wikipediaClient
+        wikipediaLoadTasks[key] = Task { @MainActor [weak self] in
+            do {
+                let article = try await client.lookupArticle(for: target)
+                guard let self else {
+                    return
+                }
+                self.wikipediaLoadTasks.removeValue(forKey: key)
+                self.wikipediaStates[key] = article.map(WikipediaSectionState.loaded) ?? .unavailable
+            } catch is CancellationError {
+                guard let self else {
+                    return
+                }
+                self.wikipediaLoadTasks.removeValue(forKey: key)
+                if case .loading? = self.wikipediaStates[key] {
+                    self.wikipediaStates[key] = .idle
+                }
+            } catch {
+                guard let self else {
+                    return
+                }
+                self.wikipediaLoadTasks.removeValue(forKey: key)
+                self.wikipediaStates[key] = .failed
+            }
+        }
+    }
+
+    func cancelWikipediaLoad(for target: WikipediaLookupTarget) {
+        let key = target.cacheKey
+        wikipediaLoadTasks.removeValue(forKey: key)?.cancel()
+        if case .loading? = wikipediaStates[key] {
+            wikipediaStates[key] = .idle
+        }
+    }
+
+    func wikipediaState(for target: WikipediaLookupTarget) -> WikipediaSectionState {
+        wikipediaStates[target.cacheKey] ?? .idle
+    }
+
+    func toggleWikipediaExpansion(for target: WikipediaLookupTarget) {
+        let key = target.cacheKey
+        if expandedWikipediaTargets.contains(key) {
+            expandedWikipediaTargets.remove(key)
+        } else {
+            expandedWikipediaTargets.insert(key)
+        }
+    }
+
+    func isWikipediaExpanded(for target: WikipediaLookupTarget) -> Bool {
+        expandedWikipediaTargets.contains(target.cacheKey)
     }
 
     private func refreshArtworkCacheStats() async {
