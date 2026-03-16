@@ -554,6 +554,7 @@ private struct BrowserView: View {
                                         .onAppear {
                                             model.noteBrowseItemVisible(index, for: page)
                                             model.ensureBrowseItemsLoaded(for: index)
+                                            model.prefetchArtworkAroundVisibleIndex(index, for: page)
                                         }
                                 }
                             }

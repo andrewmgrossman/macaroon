@@ -151,6 +151,8 @@ final class AppModel {
     @ObservationIgnored
     private var browseVisibleIndices: [String: Int] = [:]
     @ObservationIgnored
+    private var artworkPrefetchTasks: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored
     private var typeSelectBuffer = ""
     @ObservationIgnored
     private var typeSelectResetTask: Task<Void, Never>?
@@ -161,6 +163,8 @@ final class AppModel {
     private var expandedWikipediaTargets: Set<String> = []
 
     private let browsePageSize = 100
+    private let browseArtworkPrefetchRadius = 12
+    private let browseGridArtworkPixelSize = 344
     private let pendingSeekGraceInterval: TimeInterval = 2.0
     private let preferredZoneIDDefaultsKey = "Macaroon.PreferredZoneID"
     private static let byteCountFormatter: ByteCountFormatter = {
@@ -1637,6 +1641,56 @@ final class AppModel {
         browseVisibleIndices[browsePageIdentity(for: page)] = index
     }
 
+    func prefetchArtworkAroundVisibleIndex(_ index: Int, for page: BrowsePage) {
+        guard shouldPrefetchBrowseArtwork(for: page) else {
+            return
+        }
+
+        let lowerBound = max(0, index - browseArtworkPrefetchRadius)
+        let upperBound = min(page.list.count - 1, index + browseArtworkPrefetchRadius)
+        guard lowerBound <= upperBound else {
+            return
+        }
+
+        for candidateIndex in lowerBound...upperBound {
+            guard let item = browseItem(at: candidateIndex),
+                  let imageKey = item.imageKey,
+                  imageKey.isEmpty == false
+            else {
+                continue
+            }
+
+            let variant = ArtworkCacheVariant(
+                imageKey: imageKey,
+                width: browseGridArtworkPixelSize,
+                height: browseGridArtworkPixelSize,
+                format: "image/jpeg"
+            )
+            let cacheKey = variant.cacheKey
+
+            if artworkCache.object(forKey: cacheKey as NSString) != nil {
+                continue
+            }
+            if artworkPrefetchTasks[cacheKey] != nil {
+                continue
+            }
+
+            artworkPrefetchTasks[cacheKey] = Task { @MainActor [weak self] in
+                defer {
+                    self?.artworkPrefetchTasks.removeValue(forKey: cacheKey)
+                }
+                guard let self else {
+                    return
+                }
+                _ = await self.loadArtwork(
+                    imageKey: imageKey,
+                    width: self.browseGridArtworkPixelSize,
+                    height: self.browseGridArtworkPixelSize
+                )
+            }
+        }
+    }
+
     private var canHandleTypeSelect: Bool {
         guard let browsePage else {
             return false
@@ -1789,6 +1843,13 @@ final class AppModel {
             String(page.list.level),
             selectedBrowseServiceTitle ?? ""
         ].joined(separator: "|")
+    }
+
+    private func shouldPrefetchBrowseArtwork(for page: BrowsePage) -> Bool {
+        guard page.list.level == 0 else {
+            return false
+        }
+        return page.hierarchy == .albums || page.hierarchy == .artists
     }
 
     private func performNavigation(_ action: BrowseNavigationAction, historyMode: HistoryMode) {

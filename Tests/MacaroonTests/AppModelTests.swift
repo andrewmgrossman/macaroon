@@ -146,6 +146,229 @@ struct AppModelTests {
     }
 
     @Test
+    func artworkPrefetchLoadsNearbyAlbumsOrArtistsOnly() async throws {
+        let defaults = UserDefaults(suiteName: "macaroon-prefetch-artwork-\(UUID().uuidString)")!
+        let settingsStore = ArtworkCacheSettingsStore(defaults: defaults)
+        let cacheDirectory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("macaroon-prefetch-artwork-\(UUID().uuidString)", isDirectory: true)
+        let cacheStore = ArtworkCacheStore(directoryURL: cacheDirectory, settingsStore: settingsStore)
+        let fetchCount = AppModelLockedCounter()
+        let imageClient = NativeImageClient(
+            fetch: { _ in
+                await fetchCount.increment()
+                return NativeImageFetchResponse(
+                    contentType: "image/jpeg",
+                    data: makeJPEGData()
+                )
+            },
+            cacheStore: cacheStore
+        )
+        let controller = RecordingSessionController(imageFetcher: { imageKey, width, height, format in
+            try await imageClient.fetchImage(
+                imageKey: imageKey,
+                width: width,
+                height: height,
+                format: format,
+                core: CoreSummary(
+                    coreID: "core-1",
+                    displayName: "m1mini",
+                    displayVersion: "2.62",
+                    host: "10.0.7.148",
+                    port: 9330
+                )
+            )
+        })
+        let model = AppModel(
+            sessionControllerFactory: { controller },
+            artworkCacheStore: cacheStore,
+            nativeImageClient: imageClient,
+            artworkSettingsStore: settingsStore
+        )
+        model.start()
+        await Task.yield()
+
+        model.selectedHierarchy = .artists
+        controller.emit(.browseListChanged(BrowseListChangedEvent(page: BrowsePage(
+            hierarchy: .artists,
+            list: BrowseList(
+                title: "Artists",
+                subtitle: nil,
+                count: 40,
+                level: 0,
+                displayOffset: 0
+            ),
+            items: (0..<40).map { index in
+                BrowseItem(
+                    title: "Artist \(index)",
+                    subtitle: nil,
+                    imageKey: "artist-\(index)",
+                    itemKey: "artist-\(index)",
+                    hint: "list",
+                    inputPrompt: nil
+                )
+            },
+            offset: 0,
+            selectedZoneID: nil
+        ))))
+        await Task.yield()
+
+        model.prefetchArtworkAroundVisibleIndex(20, for: try #require(model.browsePage))
+        try await waitForAsyncSideEffects()
+
+        #expect(await fetchCount.value == 25)
+    }
+
+    @Test
+    func artworkPrefetchDedupesOverlappingRequests() async throws {
+        let defaults = UserDefaults(suiteName: "macaroon-prefetch-dedupe-\(UUID().uuidString)")!
+        let settingsStore = ArtworkCacheSettingsStore(defaults: defaults)
+        let cacheDirectory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("macaroon-prefetch-dedupe-\(UUID().uuidString)", isDirectory: true)
+        let cacheStore = ArtworkCacheStore(directoryURL: cacheDirectory, settingsStore: settingsStore)
+        let fetchCount = AppModelLockedCounter()
+        let imageClient = NativeImageClient(
+            fetch: { _ in
+                try await Task.sleep(for: .milliseconds(50))
+                await fetchCount.increment()
+                return NativeImageFetchResponse(
+                    contentType: "image/jpeg",
+                    data: makeJPEGData()
+                )
+            },
+            cacheStore: cacheStore
+        )
+        let controller = RecordingSessionController(imageFetcher: { imageKey, width, height, format in
+            try await imageClient.fetchImage(
+                imageKey: imageKey,
+                width: width,
+                height: height,
+                format: format,
+                core: CoreSummary(
+                    coreID: "core-1",
+                    displayName: "m1mini",
+                    displayVersion: "2.62",
+                    host: "10.0.7.148",
+                    port: 9330
+                )
+            )
+        })
+        let model = AppModel(
+            sessionControllerFactory: { controller },
+            artworkCacheStore: cacheStore,
+            nativeImageClient: imageClient,
+            artworkSettingsStore: settingsStore
+        )
+        model.start()
+        await Task.yield()
+
+        model.selectedHierarchy = .albums
+        controller.emit(.browseListChanged(BrowseListChangedEvent(page: BrowsePage(
+            hierarchy: .albums,
+            list: BrowseList(
+                title: "Albums",
+                subtitle: nil,
+                count: 40,
+                level: 0,
+                displayOffset: 0
+            ),
+            items: (0..<40).map { index in
+                BrowseItem(
+                    title: "Album \(index)",
+                    subtitle: nil,
+                    imageKey: "album-\(index)",
+                    itemKey: "album-\(index)",
+                    hint: "list",
+                    inputPrompt: nil
+                )
+            },
+            offset: 0,
+            selectedZoneID: nil
+        ))))
+        await Task.yield()
+
+        let page = try #require(model.browsePage)
+        model.prefetchArtworkAroundVisibleIndex(20, for: page)
+        model.prefetchArtworkAroundVisibleIndex(21, for: page)
+        try await Task.sleep(for: .milliseconds(200))
+
+        #expect(await fetchCount.value == 26)
+    }
+
+    @Test
+    func artworkPrefetchIsDisabledOutsideTopLevelAlbumsAndArtists() async throws {
+        let defaults = UserDefaults(suiteName: "macaroon-prefetch-disabled-\(UUID().uuidString)")!
+        let settingsStore = ArtworkCacheSettingsStore(defaults: defaults)
+        let cacheDirectory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("macaroon-prefetch-disabled-\(UUID().uuidString)", isDirectory: true)
+        let cacheStore = ArtworkCacheStore(directoryURL: cacheDirectory, settingsStore: settingsStore)
+        let fetchCount = AppModelLockedCounter()
+        let imageClient = NativeImageClient(
+            fetch: { _ in
+                await fetchCount.increment()
+                return NativeImageFetchResponse(
+                    contentType: "image/jpeg",
+                    data: makeJPEGData()
+                )
+            },
+            cacheStore: cacheStore
+        )
+        let controller = RecordingSessionController(imageFetcher: { imageKey, width, height, format in
+            try await imageClient.fetchImage(
+                imageKey: imageKey,
+                width: width,
+                height: height,
+                format: format,
+                core: CoreSummary(
+                    coreID: "core-1",
+                    displayName: "m1mini",
+                    displayVersion: "2.62",
+                    host: "10.0.7.148",
+                    port: 9330
+                )
+            )
+        })
+        let model = AppModel(
+            sessionControllerFactory: { controller },
+            artworkCacheStore: cacheStore,
+            nativeImageClient: imageClient,
+            artworkSettingsStore: settingsStore
+        )
+        model.start()
+        await Task.yield()
+
+        let browseServicePage = BrowsePage(
+            hierarchy: .browse,
+            list: BrowseList(
+                title: "Qobuz",
+                subtitle: nil,
+                count: 10,
+                level: 0,
+                displayOffset: 0
+            ),
+            items: (0..<10).map { index in
+                BrowseItem(
+                    title: "Service Item \(index)",
+                    subtitle: nil,
+                    imageKey: "service-\(index)",
+                    itemKey: "service-\(index)",
+                    hint: "list",
+                    inputPrompt: nil
+                )
+            },
+            offset: 0,
+            selectedZoneID: nil
+        )
+
+        controller.emit(.browseListChanged(BrowseListChangedEvent(page: browseServicePage)))
+        await Task.yield()
+
+        model.prefetchArtworkAroundVisibleIndex(5, for: browseServicePage)
+        try await waitForAsyncSideEffects()
+
+        #expect(await fetchCount.value == 0)
+    }
+
+    @Test
     func performPreferredActionRecoversQuietlyFromStaleBrowseItem() async throws {
         let controller = RecordingSessionController()
         controller.contextActionsError = staleItemError()
@@ -804,4 +1027,8 @@ private func waitForWikipediaState(
         state = model.wikipediaState(for: target)
     }
     return state
+}
+
+private func waitForAsyncSideEffects() async throws {
+    try await Task.sleep(for: .milliseconds(120))
 }
