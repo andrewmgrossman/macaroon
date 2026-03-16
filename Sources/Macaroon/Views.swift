@@ -546,6 +546,7 @@ private struct BrowserView: View {
                                 ForEach(0..<page.list.count, id: \.self) { index in
                                     BrowseGridSlot(index: index)
                                         .onAppear {
+                                            model.noteBrowseItemVisible(index, for: page)
                                             model.ensureBrowseItemsLoaded(for: index)
                                         }
                                 }
@@ -557,6 +558,7 @@ private struct BrowserView: View {
                                 ForEach(0..<page.list.count, id: \.self) { index in
                                     BrowseRowSlot(index: index)
                                         .onAppear {
+                                            model.noteBrowseItemVisible(index, for: page)
                                             model.ensureBrowseItemsLoaded(for: index)
                                         }
                                 }
@@ -921,6 +923,7 @@ private struct BrowseGridSlot: View {
         if let item = model.browseItem(at: index) {
             BrowserGridCard(
                 item: item,
+                artworkReloadToken: model.browsePageGeneration,
                 showsPlaybackAffordances: model.selectedHierarchy != .artists && model.selectedHierarchy != .composers
             )
         } else {
@@ -2785,6 +2788,7 @@ private struct BrowserRow: View {
 private struct BrowserGridCard: View {
     @Environment(AppModel.self) private var model
     let item: BrowseItem
+    var artworkReloadToken: Int = 0
     var showsPlaybackAffordances: Bool = true
 
     var body: some View {
@@ -2797,7 +2801,8 @@ private struct BrowserGridCard: View {
                 ArtworkView(
                     imageKey: item.imageKey,
                     title: item.title,
-                    size: CGSize(width: browseGridArtworkSize, height: browseGridArtworkSize)
+                    size: CGSize(width: browseGridArtworkSize, height: browseGridArtworkSize),
+                    reloadToken: artworkReloadToken
                 )
             }
             .buttonStyle(.plain)
@@ -3038,6 +3043,7 @@ private struct ArtworkView: View {
     let imageKey: String?
     let title: String
     let size: CGSize
+    var reloadToken: Int = 0
 
     @State private var image: NSImage?
 
@@ -3068,7 +3074,7 @@ private struct ArtworkView: View {
         }
         .frame(width: size.width, height: size.height)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .task(id: imageKey) {
+        .task(id: artworkTaskID) {
             image = await model.loadArtwork(
                 imageKey: imageKey,
                 width: Int(size.width * 2),
@@ -3076,6 +3082,10 @@ private struct ArtworkView: View {
             )
         }
         .accessibilityLabel(title)
+    }
+
+    private var artworkTaskID: String {
+        "\(reloadToken)|\(Int(size.width * 2))x\(Int(size.height * 2))|\(imageKey ?? "<nil>")"
     }
 }
 

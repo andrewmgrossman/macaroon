@@ -272,6 +272,76 @@ struct AppModelTests {
     }
 
     @Test
+    func returningToBrowseListPreloadsLastVisibleBrowsePage() async throws {
+        let controller = RecordingSessionController()
+        let model = AppModel(sessionControllerFactory: { controller })
+        model.start()
+        await Task.yield()
+
+        let listPage = BrowsePage(
+            hierarchy: .artists,
+            list: BrowseList(
+                title: "Artists",
+                subtitle: nil,
+                count: 320,
+                level: 0,
+                displayOffset: 0
+            ),
+            items: (0..<100).map { index in
+                BrowseItem(
+                    title: "Artist \(index)",
+                    subtitle: nil,
+                    imageKey: "artist-\(index)",
+                    itemKey: "artist-\(index)",
+                    hint: "list",
+                    inputPrompt: nil
+                )
+            },
+            offset: 0,
+            selectedZoneID: nil
+        )
+        let detailPage = BrowsePage(
+            hierarchy: .artists,
+            list: BrowseList(
+                title: "Artist Detail",
+                subtitle: nil,
+                count: 1,
+                level: 1,
+                displayOffset: 0
+            ),
+            items: [
+                BrowseItem(
+                    title: "Play Artist",
+                    subtitle: nil,
+                    imageKey: nil,
+                    itemKey: "play-artist",
+                    hint: "action",
+                    inputPrompt: nil
+                )
+            ],
+            offset: 0,
+            selectedZoneID: nil
+        )
+
+        controller.emit(.browseListChanged(BrowseListChangedEvent(page: listPage)))
+        await Task.yield()
+
+        model.noteBrowseItemVisible(150, for: listPage)
+
+        controller.emit(.browseListChanged(BrowseListChangedEvent(page: detailPage)))
+        await Task.yield()
+
+        controller.emit(.browseListChanged(BrowseListChangedEvent(page: listPage)))
+        await Task.yield()
+        await Task.yield()
+
+        #expect(controller.browseLoadPageCalls == [
+            .init(hierarchy: .artists, offset: 100, count: 100),
+            .init(hierarchy: .artists, offset: 200, count: 100)
+        ])
+    }
+
+    @Test
     func loadWikipediaLoadsArtistArticleWithoutBlockingOrGlobalError() async throws {
         let controller = RecordingSessionController()
         let cacheStore = WikipediaCacheStore(
@@ -410,6 +480,12 @@ private final class RecordingSessionController: RoonSessionController {
         var maxItemCount: Int
     }
 
+    struct BrowseLoadPageCall: Equatable {
+        var hierarchy: BrowseHierarchy
+        var offset: Int
+        var count: Int
+    }
+
     typealias ImageFetcher = @MainActor @Sendable (String, Int, Int, String) async throws -> ImageFetchedResult
 
     var eventHandler: (@MainActor (RoonSessionEvent) -> Void)?
@@ -419,6 +495,7 @@ private final class RecordingSessionController: RoonSessionController {
     var browseRefreshCalls: [BrowseRefreshCall] = []
     var browseOpenServiceCalls: [BrowseOpenServiceCall] = []
     var subscribeQueueCalls: [SubscribeQueueCall] = []
+    var browseLoadPageCalls: [BrowseLoadPageCall] = []
     var contextActionsError: Error?
     var performSearchMatchActionError: Error?
     private let imageFetcher: ImageFetcher?
@@ -448,7 +525,9 @@ private final class RecordingSessionController: RoonSessionController {
     func browseRefresh(hierarchy: BrowseHierarchy, zoneOrOutputID: String?) async throws {
         browseRefreshCalls.append(.init(hierarchy: hierarchy, zoneOrOutputID: zoneOrOutputID))
     }
-    func browseLoadPage(hierarchy: BrowseHierarchy, offset: Int, count: Int) async throws {}
+    func browseLoadPage(hierarchy: BrowseHierarchy, offset: Int, count: Int) async throws {
+        browseLoadPageCalls.append(.init(hierarchy: hierarchy, offset: offset, count: count))
+    }
     func browseSubmitInput(hierarchy: BrowseHierarchy, itemKey: String, input: String, zoneOrOutputID: String?) async throws {}
     func browseOpenSearchMatch(query: String, categoryTitle: String, matchTitle: String, zoneOrOutputID: String?) async throws {}
     func browseServices() async throws -> BrowseServicesResult { BrowseServicesResult(services: []) }

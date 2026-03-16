@@ -84,6 +84,7 @@ final class AppModel {
     var dismissTransientUIRequestID = 0
     var browseScrollTargetIndex: Int?
     var browseScrollTargetRequestID = 0
+    var browsePageGeneration = 0
     var wikipediaStates: [String: WikipediaSectionState] = [:]
 
     var artworkCacheUsageDisplay: String {
@@ -146,6 +147,8 @@ final class AppModel {
     private var forwardNavigationTrail: [BrowseNavigationAction] = []
     @ObservationIgnored
     private var pageScrollOffsets: [String: CGFloat] = [:]
+    @ObservationIgnored
+    private var browseVisibleIndices: [String: Int] = [:]
     @ObservationIgnored
     private var typeSelectBuffer = ""
     @ObservationIgnored
@@ -1312,6 +1315,7 @@ final class AppModel {
             browseItemsByIndex.removeAll(keepingCapacity: true)
             loadedBrowseLoadOffsets.removeAll(keepingCapacity: true)
             activeBrowseLoadOffsets.removeAll(keepingCapacity: true)
+            browsePageGeneration += 1
         }
 
         activeBrowseLoadOffsets.remove(incoming.offset)
@@ -1322,6 +1326,10 @@ final class AppModel {
         }
 
         browsePage = incoming
+
+        if shouldReset {
+            restoreBrowseViewportIfNeeded(for: incoming)
+        }
     }
 
     private func requestBrowsePageIfNeeded(offset: Int) {
@@ -1614,6 +1622,10 @@ final class AppModel {
         pageScrollOffsets[pageIdentity] = max(0, offset)
     }
 
+    func noteBrowseItemVisible(_ index: Int, for page: BrowsePage) {
+        browseVisibleIndices[browsePageIdentity(for: page)] = index
+    }
+
     private var canHandleTypeSelect: Bool {
         guard let browsePage else {
             return false
@@ -1747,8 +1759,25 @@ final class AppModel {
             .compactMap { browseItemsByIndex[$0] }
     }
 
+    private func restoreBrowseViewportIfNeeded(for page: BrowsePage) {
+        guard let lastVisibleIndex = browseVisibleIndices[browsePageIdentity(for: page)] else {
+            return
+        }
+
+        ensureBrowseItemsLoaded(for: lastVisibleIndex)
+    }
+
     private func normalizedBrowseTitle(_ title: String) -> String {
         title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private func browsePageIdentity(for page: BrowsePage) -> String {
+        [
+            page.hierarchy.rawValue,
+            page.list.title,
+            String(page.list.level),
+            selectedBrowseServiceTitle ?? ""
+        ].joined(separator: "|")
     }
 
     private func performNavigation(_ action: BrowseNavigationAction, historyMode: HistoryMode) {
