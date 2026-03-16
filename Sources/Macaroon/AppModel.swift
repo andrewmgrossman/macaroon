@@ -82,6 +82,7 @@ final class AppModel {
     var artworkCacheLimitBytes: Int
     var searchFocusRequestID = 0
     var dismissTransientUIRequestID = 0
+    var typeSelectQueryDisplay: String?
     var browseScrollTargetIndex: Int?
     var browseScrollTargetRequestID = 0
     var browsePageGeneration = 0
@@ -688,19 +689,28 @@ final class AppModel {
             return false
         }
 
-        if NSApp.keyWindow?.firstResponder is NSTextView {
+        if NSApplication.shared.keyWindow?.firstResponder is NSTextView {
             return false
         }
 
-        guard let characters = event.charactersIgnoringModifiers?.trimmingCharacters(in: .controlCharacters),
+        guard let characters = event.charactersIgnoringModifiers,
               characters.count == 1,
-              let scalar = characters.unicodeScalars.first,
-              CharacterSet.alphanumerics.contains(scalar)
+              let scalar = characters.unicodeScalars.first
         else {
             return false
         }
 
-        typeSelectBuffer.append(String(scalar).lowercased())
+        let nextCharacter: String
+        if CharacterSet.alphanumerics.contains(scalar) {
+            nextCharacter = String(scalar).lowercased()
+        } else if scalar == " ", typeSelectBuffer.isEmpty == false {
+            nextCharacter = " "
+        } else {
+            return false
+        }
+
+        typeSelectBuffer.append(nextCharacter)
+        typeSelectQueryDisplay = typeSelectBuffer
         typeSelectGeneration += 1
         let generation = typeSelectGeneration
         let query = typeSelectBuffer
@@ -712,6 +722,7 @@ final class AppModel {
                 return
             }
             self.typeSelectBuffer = ""
+            self.typeSelectQueryDisplay = nil
         }
 
         Task { @MainActor [weak self] in

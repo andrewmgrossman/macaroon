@@ -244,6 +244,12 @@ struct RootView: View {
                 .padding(.top, 14)
             }
         }
+        .overlay {
+            if let typeSelectQuery = model.typeSelectQueryDisplay {
+                TypeSelectOverlay(query: typeSelectQuery)
+                    .allowsHitTesting(false)
+            }
+        }
         .simultaneousGesture(
             TapGesture().onEnded {
                 clearToolbarSearchFocus()
@@ -876,6 +882,27 @@ private struct RecoveryView: View {
 
     private func secondaryAction() {
         model.openSettings()
+    }
+}
+
+private struct TypeSelectOverlay: View {
+    let query: String
+
+    var body: some View {
+        Text(query)
+            .font(.system(size: 20, weight: .semibold, design: .rounded))
+            .foregroundStyle(Color.white.opacity(0.96))
+            .padding(.horizontal, 18)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color.black.opacity(0.46))
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.16), lineWidth: 0.8)
+            }
+            .shadow(color: .black.opacity(0.16), radius: 12, y: 6)
     }
 }
 

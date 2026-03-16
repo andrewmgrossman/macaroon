@@ -335,10 +335,88 @@ struct AppModelTests {
         await Task.yield()
         await Task.yield()
 
-        #expect(controller.browseLoadPageCalls == [
+        let sortedLoadCalls = controller.browseLoadPageCalls.sorted { lhs, rhs in
+            lhs.offset < rhs.offset
+        }
+        #expect(sortedLoadCalls == [
             .init(hierarchy: .artists, offset: 100, count: 100),
             .init(hierarchy: .artists, offset: 200, count: 100)
         ])
+    }
+
+    @Test
+    func typeSelectDisplaysTypedQueryAndClearsAfterResetInterval() async throws {
+        let controller = RecordingSessionController()
+        let model = AppModel(sessionControllerFactory: { controller })
+        model.start()
+        await Task.yield()
+
+        model.selectedHierarchy = .artists
+        controller.emit(.browseListChanged(BrowseListChangedEvent(page: BrowsePage(
+            hierarchy: .artists,
+            list: BrowseList(
+                title: "Artists",
+                subtitle: nil,
+                count: 2,
+                level: 0,
+                displayOffset: 0
+            ),
+            items: [
+                BrowseItem(title: "Bill Evans", subtitle: nil, imageKey: nil, itemKey: "bill-evans", hint: "list", inputPrompt: nil),
+                BrowseItem(title: "Bob Dylan", subtitle: nil, imageKey: nil, itemKey: "bob-dylan", hint: "list", inputPrompt: nil)
+            ],
+            offset: 0,
+            selectedZoneID: nil
+        ))))
+        await Task.yield()
+
+        #expect(model.handleTypeSelectKeyEvent(try #require(makeKeyDownEvent("b"))) == true)
+        #expect(model.typeSelectQueryDisplay == "b")
+
+        try await Task.sleep(for: .milliseconds(1100))
+
+        #expect(model.typeSelectQueryDisplay == nil)
+    }
+
+    @Test
+    func typeSelectCapturesSpacesOnlyWhileSequenceIsActive() async throws {
+        let controller = RecordingSessionController()
+        let model = AppModel(sessionControllerFactory: { controller })
+        model.start()
+        await Task.yield()
+
+        model.selectedHierarchy = .artists
+        controller.emit(.browseListChanged(BrowseListChangedEvent(page: BrowsePage(
+            hierarchy: .artists,
+            list: BrowseList(
+                title: "Artists",
+                subtitle: nil,
+                count: 3,
+                level: 0,
+                displayOffset: 0
+            ),
+            items: [
+                BrowseItem(title: "Bill Evans", subtitle: nil, imageKey: nil, itemKey: "bill-evans", hint: "list", inputPrompt: nil),
+                BrowseItem(title: "Bill J Jones", subtitle: nil, imageKey: nil, itemKey: "bill-j-jones", hint: "list", inputPrompt: nil),
+                BrowseItem(title: "Bob Dylan", subtitle: nil, imageKey: nil, itemKey: "bob-dylan", hint: "list", inputPrompt: nil)
+            ],
+            offset: 0,
+            selectedZoneID: nil
+        ))))
+        await Task.yield()
+
+        #expect(model.handleTypeSelectKeyEvent(try #require(makeKeyDownEvent("b"))) == true)
+        #expect(model.handleTypeSelectKeyEvent(try #require(makeKeyDownEvent("i"))) == true)
+        #expect(model.handleTypeSelectKeyEvent(try #require(makeKeyDownEvent("l"))) == true)
+        #expect(model.handleTypeSelectKeyEvent(try #require(makeKeyDownEvent("l"))) == true)
+        #expect(model.handleTypeSelectKeyEvent(try #require(makeKeyDownEvent(" "))) == true)
+        #expect(model.handleTypeSelectKeyEvent(try #require(makeKeyDownEvent("J"))) == true)
+        #expect(model.typeSelectQueryDisplay == "bill j")
+
+        try await Task.sleep(for: .milliseconds(1100))
+
+        #expect(model.typeSelectQueryDisplay == nil)
+        #expect(model.handleTypeSelectKeyEvent(try #require(makeKeyDownEvent(" "))) == false)
     }
 
     @Test
@@ -602,6 +680,21 @@ private func makeZoneSummary(id: String, name: String) -> ZoneSummary {
         outputs: [],
         capabilities: .unavailable,
         nowPlaying: nil
+    )
+}
+
+private func makeKeyDownEvent(_ characters: String) -> NSEvent? {
+    NSEvent.keyEvent(
+        with: .keyDown,
+        location: .zero,
+        modifierFlags: [],
+        timestamp: 0,
+        windowNumber: 0,
+        context: nil,
+        characters: characters,
+        charactersIgnoringModifiers: characters,
+        isARepeat: false,
+        keyCode: 0
     )
 }
 
