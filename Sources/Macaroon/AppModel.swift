@@ -1135,7 +1135,7 @@ final class AppModel {
         case let .zonesSnapshot(payload):
             replaceZones(with: payload.zones)
         case let .zonesChanged(payload):
-            mergeZones(payload.zones)
+            mergeZones(payload.zones, removing: payload.removedZoneIDs)
         case let .queueSnapshot(payload):
             queueState = payload.queue
         case let .queueChanged(payload):
@@ -1251,12 +1251,16 @@ final class AppModel {
         subscribeToQueue()
     }
 
-    private func mergeZones(_ incoming: [ZoneSummary]) {
-        guard incoming.isEmpty == false else {
+    private func mergeZones(_ incoming: [ZoneSummary], removing removedZoneIDs: [String]) {
+        guard incoming.isEmpty == false || removedZoneIDs.isEmpty == false else {
             return
         }
 
         var merged = Dictionary(uniqueKeysWithValues: zones.map { ($0.zoneID, $0) })
+        for zoneID in removedZoneIDs {
+            merged.removeValue(forKey: zoneID)
+            nowPlayingUpdatedAt.removeValue(forKey: zoneID)
+        }
         for zone in incoming {
             let reconciledZone = reconciledZoneSummary(zone, at: .now)
             merged[zone.zoneID] = reconciledZone
@@ -1482,7 +1486,11 @@ final class AppModel {
         case let .zonesSnapshot(payload):
             return ["event": "zonesSnapshot", "zone_count": String(payload.zones.count)]
         case let .zonesChanged(payload):
-            return ["event": "zonesChanged", "zone_count": String(payload.zones.count)]
+            return [
+                "event": "zonesChanged",
+                "zone_count": String(payload.zones.count),
+                "removed_zone_count": String(payload.removedZoneIDs.count)
+            ]
         case let .queueSnapshot(payload):
             return ["event": "queueSnapshot", "item_count": String(payload.queue?.items.count ?? 0)]
         case let .queueChanged(payload):

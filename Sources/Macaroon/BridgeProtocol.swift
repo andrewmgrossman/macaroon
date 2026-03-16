@@ -95,6 +95,29 @@ struct ZonesSnapshotEvent: Codable, Equatable, Sendable {
 
 struct ZonesChangedEvent: Codable, Equatable, Sendable {
     var zones: [ZoneSummary]
+    var removedZoneIDs: [String]
+
+    init(zones: [ZoneSummary], removedZoneIDs: [String] = []) {
+        self.zones = zones
+        self.removedZoneIDs = removedZoneIDs
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case zones
+        case removedZoneIDs
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        zones = try container.decode([ZoneSummary].self, forKey: .zones)
+        removedZoneIDs = try container.decodeIfPresent([String].self, forKey: .removedZoneIDs) ?? []
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(zones, forKey: .zones)
+        try container.encode(removedZoneIDs, forKey: .removedZoneIDs)
+    }
 }
 
 struct QueueSnapshotEvent: Codable, Equatable, Sendable {

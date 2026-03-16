@@ -195,6 +195,83 @@ struct AppModelTests {
     }
 
     @Test
+    func zonesChangedRemovalFallsBackToRemainingZoneAndResubscribesQueue() async throws {
+        let controller = RecordingSessionController()
+        let model = AppModel(sessionControllerFactory: { controller })
+        let firstZoneID = "zone-a-\(UUID().uuidString)"
+        let secondZoneID = "zone-b-\(UUID().uuidString)"
+        model.start()
+        await Task.yield()
+
+        controller.emit(.zonesSnapshot(ZonesSnapshotEvent(zones: [
+            makeZoneSummary(id: firstZoneID, name: "Desk"),
+            makeZoneSummary(id: secondZoneID, name: "Living Room")
+        ])))
+        await Task.yield()
+
+        #expect(model.selectedZoneID == firstZoneID)
+        #expect(model.zones.map(\.zoneID) == [firstZoneID, secondZoneID])
+
+        controller.emit(.zonesChanged(ZonesChangedEvent(
+            zones: [],
+            removedZoneIDs: [firstZoneID]
+        )))
+        await Task.yield()
+
+        #expect(model.zones.map(\.zoneID) == [secondZoneID])
+        #expect(model.selectedZoneID == secondZoneID)
+        #expect(controller.subscribeQueueCalls == [
+            .init(zoneOrOutputID: firstZoneID, maxItemCount: 300),
+            .init(zoneOrOutputID: secondZoneID, maxItemCount: 300)
+        ])
+    }
+
+    @Test
+    func zonesChangedRemovalOfFinalZoneClearsSelectionAndQueueState() async throws {
+        let controller = RecordingSessionController()
+        let model = AppModel(sessionControllerFactory: { controller })
+        let onlyZoneID = "zone-solo-\(UUID().uuidString)"
+        model.start()
+        await Task.yield()
+
+        controller.emit(.zonesSnapshot(ZonesSnapshotEvent(zones: [
+            makeZoneSummary(id: onlyZoneID, name: "Desk")
+        ])))
+        await Task.yield()
+
+        model.queueState = QueueState(
+            zoneID: onlyZoneID,
+            title: "Queue",
+            totalCount: 1,
+            currentQueueItemID: "queue-item-1",
+            items: [
+                QueueItemSummary(
+                    queueItemID: "queue-item-1",
+                    title: "Track",
+                    subtitle: "Artist",
+                    detail: "Album",
+                    imageKey: nil,
+                    length: 180,
+                    isCurrent: true
+                )
+            ]
+        )
+
+        controller.emit(.zonesChanged(ZonesChangedEvent(
+            zones: [],
+            removedZoneIDs: [onlyZoneID]
+        )))
+        await Task.yield()
+
+        #expect(model.zones.isEmpty)
+        #expect(model.selectedZoneID == nil)
+        #expect(model.queueState == nil)
+        #expect(controller.subscribeQueueCalls == [
+            .init(zoneOrOutputID: onlyZoneID, maxItemCount: 300)
+        ])
+    }
+
+    @Test
     func loadWikipediaLoadsArtistArticleWithoutBlockingOrGlobalError() async throws {
         let controller = RecordingSessionController()
         let cacheStore = WikipediaCacheStore(
@@ -328,6 +405,11 @@ private final class RecordingSessionController: RoonSessionController {
         var zoneOrOutputID: String?
     }
 
+    struct SubscribeQueueCall: Equatable {
+        var zoneOrOutputID: String
+        var maxItemCount: Int
+    }
+
     typealias ImageFetcher = @MainActor @Sendable (String, Int, Int, String) async throws -> ImageFetchedResult
 
     var eventHandler: (@MainActor (RoonSessionEvent) -> Void)?
@@ -336,6 +418,7 @@ private final class RecordingSessionController: RoonSessionController {
     var browseHomeCalls: [BrowseHomeCall] = []
     var browseRefreshCalls: [BrowseRefreshCall] = []
     var browseOpenServiceCalls: [BrowseOpenServiceCall] = []
+    var subscribeQueueCalls: [SubscribeQueueCall] = []
     var contextActionsError: Error?
     var performSearchMatchActionError: Error?
     private let imageFetcher: ImageFetcher?
@@ -350,7 +433,9 @@ private final class RecordingSessionController: RoonSessionController {
     func connectManually(host: String, port: Int, persistedState: PersistedSessionState) async throws {}
     func disconnect() async {}
     func subscribeZones() async throws {}
-    func subscribeQueue(zoneOrOutputID: String, maxItemCount: Int) async throws {}
+    func subscribeQueue(zoneOrOutputID: String, maxItemCount: Int) async throws {
+        subscribeQueueCalls.append(.init(zoneOrOutputID: zoneOrOutputID, maxItemCount: maxItemCount))
+    }
     func queuePlayFromHere(zoneOrOutputID: String, queueItemID: String) async throws {}
     func browseHome(hierarchy: BrowseHierarchy, zoneOrOutputID: String?) async throws {
         browseHomeCalls.append(.init(hierarchy: hierarchy, zoneOrOutputID: zoneOrOutputID))
@@ -420,10 +505,25 @@ private final class RecordingSessionController: RoonSessionController {
         }
         return try await imageFetcher(imageKey, width, height, format)
     }
+
+    func emit(_ event: RoonSessionEvent) {
+        eventHandler?(event)
+    }
 }
 
 private func staleItemError() -> NSError {
     NSError(domain: "Roon", code: 500, userInfo: [NSLocalizedDescriptionKey: "InvalidItemKey"])
+}
+
+private func makeZoneSummary(id: String, name: String) -> ZoneSummary {
+    ZoneSummary(
+        zoneID: id,
+        displayName: name,
+        state: "paused",
+        outputs: [],
+        capabilities: .unavailable,
+        nowPlaying: nil
+    )
 }
 
 private func makeJPEGData() -> Data {

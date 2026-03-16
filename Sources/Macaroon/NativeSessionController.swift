@@ -517,7 +517,8 @@ final class NativeRoonSessionController: RoonSessionController {
                 }
             case "Changed":
                 let payload = try decodeBody(NativeZonesChangedPayload.self, from: message)
-                for removedID in payload.zones_removed ?? [] {
+                let removedZoneIDs = payload.zones_removed ?? []
+                for removedID in removedZoneIDs {
                     liveZonesByID.removeValue(forKey: removedID)
                 }
 
@@ -542,9 +543,12 @@ final class NativeRoonSessionController: RoonSessionController {
                     }
                 }
 
-                if emitted.isEmpty == false {
+                if emitted.isEmpty == false || removedZoneIDs.isEmpty == false {
                     let deduped = Self.deduplicateZones(emitted)
-                    eventHandler?(.zonesChanged(ZonesChangedEvent(zones: deduped)))
+                    eventHandler?(.zonesChanged(ZonesChangedEvent(
+                        zones: deduped,
+                        removedZoneIDs: removedZoneIDs
+                    )))
                     for zone in deduped {
                         eventHandler?(.nowPlayingChanged(NowPlayingChangedEvent(zoneID: zone.zoneID, nowPlaying: zone.nowPlaying)))
                     }

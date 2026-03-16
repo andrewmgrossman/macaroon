@@ -230,6 +230,98 @@ struct NativeSessionControllerTests {
         #expect(zoneChangedEvents.last?.first?.zoneID == "zone-1")
         #expect(zoneChangedEvents.last?.first?.nowPlaying?.seekPosition == 13)
     }
+
+    @Test
+    @MainActor
+    func zonesChangedEmitsRemovalOnlyDelta() async throws {
+        let transport = MockNativeMooTransport(messages: [
+            try registryInfoMessage(requestID: "0"),
+            try registryRegisteredMessage(requestID: "1"),
+            try zonesSubscribedMessage(requestID: "2")
+        ])
+        let registryClient = NativeRegistryClient(transportFactory: { transport })
+        let controller = NativeRoonSessionController(registryClient: registryClient)
+
+        var events: [RoonSessionEvent] = []
+        controller.eventHandler = { event in
+            events.append(event)
+        }
+
+        try await controller.connectManually(
+            host: "10.0.7.148",
+            port: 9330,
+            persistedState: .empty
+        )
+        try await controller.subscribeZones()
+
+        await transport.pushIncoming(try MooCodec.encodeMessage(
+            verb: .continue,
+            name: "Changed",
+            requestID: "2",
+            body: Data("""
+            {"zones_removed":["zone-1"]}
+            """.utf8),
+            contentType: "application/json"
+        ))
+
+        try await Task.sleep(for: .milliseconds(50))
+
+        let zoneChangedEvents = events.compactMap { event -> ZonesChangedEvent? in
+            guard case let .zonesChanged(payload) = event else {
+                return nil
+            }
+            return payload
+        }
+        #expect(zoneChangedEvents.last?.zones == [])
+        #expect(zoneChangedEvents.last?.removedZoneIDs == ["zone-1"])
+    }
+
+    @Test
+    @MainActor
+    func zonesChangedEmitsChangedZonesAndRemovedZoneIDsTogether() async throws {
+        let transport = MockNativeMooTransport(messages: [
+            try registryInfoMessage(requestID: "0"),
+            try registryRegisteredMessage(requestID: "1"),
+            try zonesSubscribedMessage(requestID: "2")
+        ])
+        let registryClient = NativeRegistryClient(transportFactory: { transport })
+        let controller = NativeRoonSessionController(registryClient: registryClient)
+
+        var events: [RoonSessionEvent] = []
+        controller.eventHandler = { event in
+            events.append(event)
+        }
+
+        try await controller.connectManually(
+            host: "10.0.7.148",
+            port: 9330,
+            persistedState: .empty
+        )
+        try await controller.subscribeZones()
+
+        await transport.pushIncoming(try MooCodec.encodeMessage(
+            verb: .continue,
+            name: "Changed",
+            requestID: "2",
+            body: Data("""
+            {"zones_removed":["zone-1"],"zones_added":[{"zone_id":"zone-2","display_name":"Living Room","state":"playing","outputs":[],"is_previous_allowed":true,"is_next_allowed":true,"is_pause_allowed":true,"is_play_allowed":true,"is_seek_allowed":true,"now_playing":{"three_line":{"line1":"Track","line2":"Artist","line3":"Album"},"seek_position":12,"length":200}}],"zones_seek_changed":[{"zone_id":"zone-2","seek_position":13}]}
+            """.utf8),
+            contentType: "application/json"
+        ))
+
+        try await Task.sleep(for: .milliseconds(50))
+
+        let zoneChangedEvents = events.compactMap { event -> ZonesChangedEvent? in
+            guard case let .zonesChanged(payload) = event else {
+                return nil
+            }
+            return payload
+        }
+        #expect(zoneChangedEvents.last?.removedZoneIDs == ["zone-1"])
+        #expect(zoneChangedEvents.last?.zones.count == 1)
+        #expect(zoneChangedEvents.last?.zones.first?.zoneID == "zone-2")
+        #expect(zoneChangedEvents.last?.zones.first?.nowPlaying?.seekPosition == 13)
+    }
 }
 
 private func decodedSentMessages(from transport: MockNativeMooTransport) async throws -> [MooMessageEnvelope] {
