@@ -44,6 +44,35 @@ struct AppModelTests {
     }
 
     @Test
+    func retryConnectionAfterAuthorizationUsesAuthorizingEndpoint() async throws {
+        let controller = RecordingSessionController()
+        let model = AppModel(
+            sessionControllerFactory: { controller },
+            sessionStore: SessionStateStore(storageURL: temporarySessionURL())
+        )
+        model.start()
+        try await waitForAsyncSideEffects()
+        controller.connectAutomaticCallCount = 0
+
+        model.connectionStatus = .authorizing(CoreSummary(
+            coreID: "core-1",
+            displayName: "m1mini",
+            displayVersion: "2.62",
+            host: "10.0.7.148",
+            port: 9330
+        ))
+
+        model.retryConnectionAfterAuthorization()
+        try await waitForAsyncSideEffects()
+
+        #expect(model.manualConnect == ManualConnectConfiguration(host: "10.0.7.148", port: 9330))
+        #expect(controller.connectManualCalls == [
+            .init(host: "10.0.7.148", port: 9330)
+        ])
+        #expect(controller.connectAutomaticCallCount == 0)
+    }
+
+    @Test
     func loadArtworkUsesMemoryCacheOnRepeatAccess() async throws {
         let defaults = UserDefaults(suiteName: "macaroon-appmodel-artwork-\(UUID().uuidString)")!
         let settingsStore = ArtworkCacheSettingsStore(defaults: defaults)
@@ -786,9 +815,16 @@ private final class RecordingSessionController: RoonSessionController {
         var count: Int
     }
 
+    struct ConnectManualCall: Equatable {
+        var host: String
+        var port: Int
+    }
+
     typealias ImageFetcher = @MainActor @Sendable (String, Int, Int, String) async throws -> ImageFetchedResult
 
     var eventHandler: (@MainActor (RoonSessionEvent) -> Void)?
+    var connectAutomaticCallCount = 0
+    var connectManualCalls: [ConnectManualCall] = []
     var contextActionsCalls: [(BrowseHierarchy, String, String?)] = []
     var performActionCalls: [PerformActionCall] = []
     var browseHomeCalls: [BrowseHomeCall] = []
@@ -806,8 +842,12 @@ private final class RecordingSessionController: RoonSessionController {
 
     func start() async throws {}
     func stop() async {}
-    func connectAutomatically(persistedState: PersistedSessionState) async throws {}
-    func connectManually(host: String, port: Int, persistedState: PersistedSessionState) async throws {}
+    func connectAutomatically(persistedState: PersistedSessionState) async throws {
+        connectAutomaticCallCount += 1
+    }
+    func connectManually(host: String, port: Int, persistedState: PersistedSessionState) async throws {
+        connectManualCalls.append(.init(host: host, port: port))
+    }
     func disconnect() async {}
     func subscribeZones() async throws {}
     func subscribeQueue(zoneOrOutputID: String, maxItemCount: Int) async throws {
@@ -1030,4 +1070,10 @@ private func waitForWikipediaState(
 
 private func waitForAsyncSideEffects() async throws {
     try await Task.sleep(for: .milliseconds(120))
+}
+
+private func temporarySessionURL() -> URL {
+    URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent("macaroon-appmodel-session-\(UUID().uuidString)", isDirectory: true)
+        .appendingPathComponent("roon-session.json", isDirectory: false)
 }

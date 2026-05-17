@@ -183,7 +183,8 @@ final class AppModel {
         artworkCacheStore: ArtworkCacheStore = .shared,
         nativeImageClient: NativeImageClient? = nil,
         wikipediaClient: WikipediaClient? = nil,
-        artworkSettingsStore: ArtworkCacheSettingsStore = ArtworkCacheSettingsStore()
+        artworkSettingsStore: ArtworkCacheSettingsStore = ArtworkCacheSettingsStore(),
+        sessionStore: SessionStateStore = SessionStateStore()
     ) {
         let artworkSettings = artworkSettingsStore.load()
         self.sessionControllerFactory = sessionControllerFactory
@@ -191,6 +192,7 @@ final class AppModel {
         self.artworkCacheStore = artworkCacheStore
         self.nativeImageClient = nativeImageClient ?? NativeImageClient(cacheStore: artworkCacheStore)
         self.wikipediaClient = wikipediaClient ?? WikipediaClient()
+        self.sessionStore = sessionStore
         self.artworkCacheLimitBytes = artworkSettings.maxBytes
         self.selectedZoneID = UserDefaults.standard.string(forKey: preferredZoneIDDefaultsKey)
         configureArtworkMemoryCacheLimit()
@@ -326,6 +328,18 @@ final class AppModel {
                 errorState = ErrorState(title: "Manual Connect Failed", message: error.localizedDescription)
             }
         }
+    }
+
+    func retryConnectionAfterAuthorization() {
+        if case let .authorizing(core) = connectionStatus,
+           let host = core?.host,
+           let port = core?.port {
+            manualConnect = ManualConnectConfiguration(host: host, port: port)
+            connectManually()
+            return
+        }
+
+        connectAutomatically()
     }
 
     func disconnect() {
@@ -2066,6 +2080,12 @@ struct SessionStateStore {
     private let decoder = JSONDecoder()
     private let encoder = JSONEncoder()
     private let fileManager = FileManager.default
+    private let storageURLOverride: URL?
+
+    init(storageURL: URL? = nil) {
+        self.storageURLOverride = storageURL
+        encoder.outputFormatting = [.sortedKeys]
+    }
 
     func load() throws -> PersistedSessionState {
         let url = try storageURL()
@@ -2088,6 +2108,9 @@ struct SessionStateStore {
     }
 
     func storageURL() throws -> URL {
+        if let storageURLOverride {
+            return storageURLOverride
+        }
         let base = try fileManager.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,

@@ -53,4 +53,30 @@ struct SessionPayloadTests {
         #expect(decoded.page.items.count == 1)
         #expect(decoded.page.list.title == "Library")
     }
+
+    @Test
+    func sessionStateStoreSavesTokensInJSONForSilentLocalPairing() throws {
+        let storageURL = temporarySessionURL()
+        let store = SessionStateStore(storageURL: storageURL)
+
+        try store.save(PersistedSessionState(
+            pairedCoreID: "core-1",
+            tokens: ["core-1": "secret-token"],
+            endpoints: ["core-1": CoreEndpoint(host: "10.0.7.148", port: 9330)]
+        ))
+
+        let rawJSON = String(data: try Data(contentsOf: storageURL), encoding: .utf8) ?? ""
+        #expect(rawJSON.contains("secret-token"))
+        #expect(rawJSON.contains("tokens"))
+
+        let loaded = try store.load()
+        #expect(loaded.tokens["core-1"] == "secret-token")
+        #expect(loaded.endpoints["core-1"] == CoreEndpoint(host: "10.0.7.148", port: 9330))
+    }
+}
+
+private func temporarySessionURL() -> URL {
+    URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent("macaroon-session-store-\(UUID().uuidString)", isDirectory: true)
+        .appendingPathComponent("roon-session.json", isDirectory: false)
 }

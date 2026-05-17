@@ -876,7 +876,9 @@ private struct RecoveryView: View {
 
     private func primaryAction() {
         switch model.connectionStatus {
-        case .connecting, .authorizing, .disconnected, .error, .connected:
+        case .authorizing:
+            model.retryConnectionAfterAuthorization()
+        case .connecting, .disconnected, .error, .connected:
             model.connectAutomatically()
         }
     }
