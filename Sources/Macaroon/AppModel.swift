@@ -29,36 +29,78 @@ final class AppModel {
         var navigationGeneration: Int
     }
 
-    var connectionStatus: ConnectionStatus = .disconnected {
-        didSet {
+    private struct PendingBrowseVisibleRange {
+        var pageIdentity: String
+        var page: BrowsePage
+        var lowerBound: Int
+        var upperBound: Int
+        var latestIndex: Int
+        var shouldPrefetchArtwork: Bool
+    }
+
+    var connectionStatus: ConnectionStatus {
+        get { connectionPlaybackState.connectionStatus }
+        set {
+            connectionPlaybackState.connectionStatus = newValue
             MacaroonDebugLogger.logApp(
                 "app.connection_status_changed",
-                details: ["summary": connectionStatus.summary]
+                details: ["summary": newValue.summary]
             )
         }
     }
-    var currentCore: CoreSummary?
-    var manualConnect = ManualConnectConfiguration(host: "127.0.0.1", port: 9100)
-    var selectedHierarchy: BrowseHierarchy = .artists
-    var browsePage: BrowsePage?
-    var browseItemsByIndex: [Int: BrowseItem] = [:]
-    var browseServices: [BrowseServiceSummary] = []
-    var selectedBrowseServiceTitle: String?
-    var zones: [ZoneSummary] = []
+    var currentCore: CoreSummary? {
+        get { connectionPlaybackState.currentCore }
+        set { connectionPlaybackState.currentCore = newValue }
+    }
+    var manualConnect: ManualConnectConfiguration {
+        get { connectionPlaybackState.manualConnect }
+        set { connectionPlaybackState.manualConnect = newValue }
+    }
+    var selectedHierarchy: BrowseHierarchy {
+        get { browsePresentationState.selectedHierarchy }
+        set { browsePresentationState.selectedHierarchy = newValue }
+    }
+    var browsePage: BrowsePage? {
+        get { browsePresentationState.browsePage }
+        set { browsePresentationState.browsePage = newValue }
+    }
+    var browseItemsByIndex: [Int: BrowseItem] {
+        get { browsePresentationState.browseItemsByIndex }
+        set { browsePresentationState.browseItemsByIndex = newValue }
+    }
+    var browseServices: [BrowseServiceSummary] {
+        get { browsePresentationState.browseServices }
+        set { browsePresentationState.browseServices = newValue }
+    }
+    var selectedBrowseServiceTitle: String? {
+        get { browsePresentationState.selectedBrowseServiceTitle }
+        set { browsePresentationState.selectedBrowseServiceTitle = newValue }
+    }
+    var zones: [ZoneSummary] {
+        get { connectionPlaybackState.zones }
+        set { connectionPlaybackState.zones = newValue }
+    }
     var selectedZoneID: String? {
-        didSet {
+        get { connectionPlaybackState.selectedZoneID }
+        set {
+            connectionPlaybackState.selectedZoneID = newValue
             MacaroonDebugLogger.logApp(
                 "app.selected_zone_changed",
-                details: ["zone_id": selectedZoneID ?? "<nil>"]
+                details: ["zone_id": newValue ?? "<nil>"]
             )
         }
     }
-    var queueState: QueueState?
-    var isQueueSidebarVisible = false {
-        didSet {
+    var queueState: QueueState? {
+        get { queuePresentationState.queueState }
+        set { queuePresentationState.queueState = newValue }
+    }
+    var isQueueSidebarVisible: Bool {
+        get { queuePresentationState.isQueueSidebarVisible }
+        set {
+            queuePresentationState.isQueueSidebarVisible = newValue
             MacaroonDebugLogger.logApp(
                 "app.queue_sidebar_toggled",
-                details: ["visible": isQueueSidebarVisible ? "true" : "false"]
+                details: ["visible": newValue ? "true" : "false"]
             )
         }
     }
@@ -79,18 +121,51 @@ final class AppModel {
             )
         }
     }
-    var sessionStatusText = "Idle"
-    var autoConnectionIssue: String?
-    var searchText = ""
-    var searchResultsPage: SearchResultsPage?
-    var artworkCacheUsageBytes = 0
-    var artworkCacheLimitBytes: Int
-    var searchFocusRequestID = 0
+    var sessionStatusText: String {
+        get { connectionPlaybackState.sessionStatusText }
+        set { connectionPlaybackState.sessionStatusText = newValue }
+    }
+    var autoConnectionIssue: String? {
+        get { connectionPlaybackState.autoConnectionIssue }
+        set { connectionPlaybackState.autoConnectionIssue = newValue }
+    }
+    var searchText: String {
+        get { browsePresentationState.searchText }
+        set { browsePresentationState.searchText = newValue }
+    }
+    var searchResultsPage: SearchResultsPage? {
+        get { browsePresentationState.searchResultsPage }
+        set { browsePresentationState.searchResultsPage = newValue }
+    }
+    var artworkCacheUsageBytes: Int {
+        get { artworkPresentationState.artworkCacheUsageBytes }
+        set { artworkPresentationState.artworkCacheUsageBytes = newValue }
+    }
+    var artworkCacheLimitBytes: Int {
+        get { artworkPresentationState.artworkCacheLimitBytes }
+        set { artworkPresentationState.artworkCacheLimitBytes = newValue }
+    }
+    var searchFocusRequestID: Int {
+        get { browsePresentationState.searchFocusRequestID }
+        set { browsePresentationState.searchFocusRequestID = newValue }
+    }
     var dismissTransientUIRequestID = 0
-    var typeSelectQueryDisplay: String?
-    var browseScrollTargetIndex: Int?
-    var browseScrollTargetRequestID = 0
-    var browsePageGeneration = 0
+    var typeSelectQueryDisplay: String? {
+        get { browsePresentationState.typeSelectQueryDisplay }
+        set { browsePresentationState.typeSelectQueryDisplay = newValue }
+    }
+    var browseScrollTargetIndex: Int? {
+        get { browsePresentationState.browseScrollTargetIndex }
+        set { browsePresentationState.browseScrollTargetIndex = newValue }
+    }
+    var browseScrollTargetRequestID: Int {
+        get { browsePresentationState.browseScrollTargetRequestID }
+        set { browsePresentationState.browseScrollTargetRequestID = newValue }
+    }
+    var browsePageGeneration: Int {
+        get { browsePresentationState.browsePageGeneration }
+        set { browsePresentationState.browsePageGeneration = newValue }
+    }
     var wikipediaStates: [String: WikipediaSectionState] = [:]
 
     var artworkCacheUsageDisplay: String {
@@ -104,6 +179,11 @@ final class AppModel {
     var artworkCacheLimitMegabytes: Double {
         Double(artworkCacheLimitBytes) / (1024 * 1024)
     }
+
+    private let connectionPlaybackState = ConnectionPlaybackStateStore()
+    private let browsePresentationState = BrowsePresentationStateStore()
+    private let queuePresentationState = QueuePresentationStateStore()
+    private let artworkPresentationState = ArtworkPresentationStateStore()
 
     @ObservationIgnored
     private var sessionController: RoonSessionController?
@@ -134,13 +214,11 @@ final class AppModel {
     @ObservationIgnored
     private var searchRootBrowsePage: BrowsePage?
     @ObservationIgnored
-    private var activeBrowseLoadOffsets: Set<Int> = []
-    @ObservationIgnored
-    private var loadedBrowseLoadOffsets: Set<Int> = []
-    @ObservationIgnored
     private var nowPlayingUpdatedAt: [String: Date] = [:]
     @ObservationIgnored
     private var volumeUpdateTask: Task<Void, Never>?
+    @ObservationIgnored
+    private var artworkCacheStatsRefreshTask: Task<Void, Never>?
     @ObservationIgnored
     private var pendingSeekStates: [String: PendingSeekState] = [:]
     @ObservationIgnored
@@ -163,6 +241,10 @@ final class AppModel {
     private var pageScrollOffsets: [String: CGFloat] = [:]
     @ObservationIgnored
     private var browseVisibleIndices: [String: Int] = [:]
+    @ObservationIgnored
+    private var pendingBrowseVisibleRange: PendingBrowseVisibleRange?
+    @ObservationIgnored
+    private var browseVisibleRangeTask: Task<Void, Never>?
     @ObservationIgnored
     private var typeSelectBuffer = ""
     @ObservationIgnored
@@ -269,11 +351,19 @@ final class AppModel {
         sessionEventTask = nil
         connectionMonitorTask?.cancel()
         connectionMonitorTask = nil
+        browseVisibleRangeTask?.cancel()
+        browseVisibleRangeTask = nil
+        artworkCacheStatsRefreshTask?.cancel()
+        artworkCacheStatsRefreshTask = nil
     }
 
     func prepareForTermination() {
         connectionMonitorTask?.cancel()
         connectionMonitorTask = nil
+        browseVisibleRangeTask?.cancel()
+        browseVisibleRangeTask = nil
+        artworkCacheStatsRefreshTask?.cancel()
+        artworkCacheStatsRefreshTask = nil
         invalidateBrowseRequests()
         Task {
             try? await artworkCacheStore.flush()
@@ -593,7 +683,7 @@ final class AppModel {
     }
 
     func loadPage(offset: Int, count: Int = 100) {
-        activeBrowseLoadOffsets.insert(offset)
+        browsePresentationState.activeBrowseLoadOffsets.insert(offset)
         MacaroonDebugLogger.logApp(
             "app.load_page",
             details: [
@@ -612,11 +702,11 @@ final class AppModel {
                     count: count
                 )
                 guard applyBrowseSnapshot(snapshot, requestID: requestID) else {
-                    activeBrowseLoadOffsets.remove(offset)
+                    browsePresentationState.activeBrowseLoadOffsets.remove(offset)
                     return
                 }
             } catch {
-                activeBrowseLoadOffsets.remove(offset)
+                browsePresentationState.activeBrowseLoadOffsets.remove(offset)
                 guard isCurrentBrowseRequest(requestID) else {
                     return
                 }
@@ -1037,6 +1127,8 @@ final class AppModel {
 
         do {
             let stats = try await artworkCacheStore.setSettings(settings)
+            artworkCacheStatsRefreshTask?.cancel()
+            artworkCacheStatsRefreshTask = nil
             artworkCacheUsageBytes = stats.totalBytes
         } catch {
             errorState = ErrorState(title: "Artwork Cache Error", message: error.localizedDescription)
@@ -1048,6 +1140,8 @@ final class AppModel {
 
         do {
             try await artworkCacheStore.clear()
+            artworkCacheStatsRefreshTask?.cancel()
+            artworkCacheStatsRefreshTask = nil
             artworkCacheUsageBytes = 0
         } catch {
             errorState = ErrorState(title: "Clear Cache Failed", message: error.localizedDescription)
@@ -1081,9 +1175,15 @@ final class AppModel {
             fetchArtwork: artworkFetchLoader()
         )
         if result != nil {
-            await refreshArtworkCacheStats()
+            scheduleArtworkCacheStatsRefresh()
         }
         return result?.image
+    }
+
+    func refreshArtworkCacheStatsForSettings() async {
+        artworkCacheStatsRefreshTask?.cancel()
+        artworkCacheStatsRefreshTask = nil
+        await refreshArtworkCacheStats()
     }
 
     func loadWikipedia(for target: WikipediaLookupTarget) {
@@ -1161,6 +1261,17 @@ final class AppModel {
             artworkCacheUsageBytes = stats.totalBytes
         } catch {
             MacaroonDebugLogger.logError("artwork_cache.stats_failed", error: error)
+        }
+    }
+
+    private func scheduleArtworkCacheStatsRefresh() {
+        artworkCacheStatsRefreshTask?.cancel()
+        artworkCacheStatsRefreshTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(500))
+            guard let self, Task.isCancelled == false else {
+                return
+            }
+            await self.refreshArtworkCacheStats()
         }
     }
 
@@ -1378,7 +1489,10 @@ final class AppModel {
 
     private func invalidateBrowseRequests() {
         browseNavigationGeneration += 1
-        activeBrowseLoadOffsets.removeAll(keepingCapacity: true)
+        browsePresentationState.activeBrowseLoadOffsets.removeAll(keepingCapacity: true)
+        pendingBrowseVisibleRange = nil
+        browseVisibleRangeTask?.cancel()
+        browseVisibleRangeTask = nil
         Task { [artworkPipeline] in
             await artworkPipeline.cancelPrefetches()
         }
@@ -1460,16 +1574,19 @@ final class AppModel {
 
         if shouldReset {
             browseItemsByIndex.removeAll(keepingCapacity: true)
-            loadedBrowseLoadOffsets.removeAll(keepingCapacity: true)
-            activeBrowseLoadOffsets.removeAll(keepingCapacity: true)
+            browsePresentationState.loadedBrowseLoadOffsets.removeAll(keepingCapacity: true)
+            browsePresentationState.activeBrowseLoadOffsets.removeAll(keepingCapacity: true)
+            pendingBrowseVisibleRange = nil
+            browseVisibleRangeTask?.cancel()
+            browseVisibleRangeTask = nil
             browsePageGeneration += 1
             Task { [artworkPipeline] in
                 await artworkPipeline.cancelPrefetches()
             }
         }
 
-        activeBrowseLoadOffsets.remove(incoming.offset)
-        loadedBrowseLoadOffsets.insert(incoming.offset)
+        browsePresentationState.activeBrowseLoadOffsets.remove(incoming.offset)
+        browsePresentationState.loadedBrowseLoadOffsets.insert(incoming.offset)
 
         for (index, item) in incoming.items.enumerated() {
             browseItemsByIndex[incoming.offset + index] = item
@@ -1490,10 +1607,10 @@ final class AppModel {
         let normalizedOffset = max(0, min(offset, max(browsePage.list.count - 1, 0)))
         let pageOffset = (normalizedOffset / browsePageSize) * browsePageSize
 
-        guard loadedBrowseLoadOffsets.contains(pageOffset) == false else {
+        guard browsePresentationState.loadedBrowseLoadOffsets.contains(pageOffset) == false else {
             return
         }
-        guard activeBrowseLoadOffsets.contains(pageOffset) == false else {
+        guard browsePresentationState.activeBrowseLoadOffsets.contains(pageOffset) == false else {
             return
         }
 
@@ -1587,8 +1704,8 @@ final class AppModel {
         for (index, item) in searchRootBrowsePage.items.enumerated() {
             browseItemsByIndex[searchRootBrowsePage.offset + index] = item
         }
-        loadedBrowseLoadOffsets = [searchRootBrowsePage.offset]
-        activeBrowseLoadOffsets.removeAll(keepingCapacity: true)
+        browsePresentationState.loadedBrowseLoadOffsets = [searchRootBrowsePage.offset]
+        browsePresentationState.activeBrowseLoadOffsets.removeAll(keepingCapacity: true)
     }
 
     private func sendVolumeChange(outputID: String, how: VolumeChangeMode, value: Double) async {
@@ -1772,8 +1889,15 @@ final class AppModel {
         pageScrollOffsets[pageIdentity] = max(0, offset)
     }
 
-    func noteBrowseItemVisible(_ index: Int, for page: BrowsePage) {
-        browseVisibleIndices[browsePageIdentity(for: page)] = index
+    func noteBrowseItemVisible(_ index: Int, for page: BrowsePage, prefetchArtwork: Bool = false) {
+        let identity = browsePageIdentity(for: page)
+        browseVisibleIndices[identity] = index
+        scheduleBrowseVisibleRangeUpdate(
+            index: index,
+            page: page,
+            identity: identity,
+            prefetchArtwork: prefetchArtwork
+        )
     }
 
     func prefetchArtworkAroundVisibleIndex(_ index: Int, for page: BrowsePage) {
@@ -1814,6 +1938,62 @@ final class AppModel {
                 requests: requests,
                 fetchArtwork: loader
             )
+        }
+    }
+
+    private func scheduleBrowseVisibleRangeUpdate(
+        index: Int,
+        page: BrowsePage,
+        identity: String,
+        prefetchArtwork: Bool
+    ) {
+        if var pending = pendingBrowseVisibleRange, pending.pageIdentity == identity {
+            pending.lowerBound = min(pending.lowerBound, index)
+            pending.upperBound = max(pending.upperBound, index)
+            pending.latestIndex = index
+            pending.shouldPrefetchArtwork = pending.shouldPrefetchArtwork || prefetchArtwork
+            pending.page = page
+            pendingBrowseVisibleRange = pending
+        } else {
+            pendingBrowseVisibleRange = PendingBrowseVisibleRange(
+                pageIdentity: identity,
+                page: page,
+                lowerBound: index,
+                upperBound: index,
+                latestIndex: index,
+                shouldPrefetchArtwork: prefetchArtwork
+            )
+        }
+
+        browseVisibleRangeTask?.cancel()
+        browseVisibleRangeTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(60))
+            guard let self, Task.isCancelled == false else {
+                return
+            }
+            self.flushPendingBrowseVisibleRange(identity: identity)
+        }
+    }
+
+    private func flushPendingBrowseVisibleRange(identity: String) {
+        guard let pending = pendingBrowseVisibleRange,
+              pending.pageIdentity == identity
+        else {
+            return
+        }
+        pendingBrowseVisibleRange = nil
+
+        guard let currentPage = browsePage,
+              browsePageIdentity(for: pending.page) == browsePageIdentity(for: currentPage)
+        else {
+            return
+        }
+
+        let midpoint = (pending.lowerBound + pending.upperBound) / 2
+        ensureBrowseItemsLoaded(for: midpoint)
+
+        if pending.shouldPrefetchArtwork {
+            prefetchArtworkAroundVisibleIndex(pending.latestIndex, for: pending.page)
         }
     }
 
@@ -1923,9 +2103,9 @@ final class AppModel {
     private func ensureBrowsePageLoaded(pageIndex: Int) async -> [BrowseItem]? {
         let offset = pageIndex * browsePageSize
 
-        if loadedBrowseLoadOffsets.contains(offset) == false {
+        if browsePresentationState.loadedBrowseLoadOffsets.contains(offset) == false {
             let requestID = beginBrowsePageRequest()
-            activeBrowseLoadOffsets.insert(offset)
+            browsePresentationState.activeBrowseLoadOffsets.insert(offset)
             do {
                 let snapshot = try await sessionController?.browseLoadPage(
                     hierarchy: selectedHierarchy,
@@ -1933,11 +2113,11 @@ final class AppModel {
                     count: browsePageSize
                 )
                 guard applyBrowseSnapshot(snapshot, requestID: requestID) else {
-                    activeBrowseLoadOffsets.remove(offset)
+                    browsePresentationState.activeBrowseLoadOffsets.remove(offset)
                     return nil
                 }
             } catch {
-                activeBrowseLoadOffsets.remove(offset)
+                browsePresentationState.activeBrowseLoadOffsets.remove(offset)
                 return nil
             }
         }

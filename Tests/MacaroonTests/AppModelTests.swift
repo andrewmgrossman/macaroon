@@ -168,6 +168,10 @@ struct AppModelTests {
         #expect(first != nil)
         #expect(second != nil)
         #expect(await fetchCount.value == 1)
+        #expect(model.artworkCacheUsageBytes == 0)
+
+        try await Task.sleep(for: .milliseconds(650))
+
         #expect(model.artworkCacheUsageBytes > 0)
     }
 
@@ -212,6 +216,7 @@ struct AppModelTests {
         await Task.yield()
 
         _ = await model.loadArtwork(imageKey: "clear-image", width: 44, height: 44)
+        try await Task.sleep(for: .milliseconds(650))
         #expect(model.artworkCacheUsageBytes > 0)
 
         await model.clearArtworkCache()
@@ -287,7 +292,7 @@ struct AppModelTests {
             offset: 0,
             selectedZoneID: nil
         ))))
-        await Task.yield()
+        try await waitForAsyncSideEffects()
 
         model.prefetchArtworkAroundVisibleIndex(20, for: try #require(model.browsePage))
         try await waitForAsyncSideEffects()
@@ -361,7 +366,7 @@ struct AppModelTests {
             offset: 0,
             selectedZoneID: nil
         ))))
-        await Task.yield()
+        try await waitForAsyncSideEffects()
 
         let page = try #require(model.browsePage)
         model.prefetchArtworkAroundVisibleIndex(20, for: page)
@@ -636,6 +641,54 @@ struct AppModelTests {
         try await waitForAsyncSideEffects()
 
         controller.emit(.browseListChanged(BrowseListChangedEvent(page: listPage)))
+        try await waitForAsyncSideEffects()
+
+        let sortedLoadCalls = controller.browseLoadPageCalls.sorted { lhs, rhs in
+            lhs.offset < rhs.offset
+        }
+        #expect(sortedLoadCalls == [
+            .init(hierarchy: .artists, offset: 100, count: 100),
+            .init(hierarchy: .artists, offset: 200, count: 100)
+        ])
+    }
+
+    @Test
+    func visibleBrowseReportsCoalescePageLoads() async throws {
+        let controller = RecordingSessionController()
+        let model = AppModel(sessionControllerFactory: { controller })
+        model.start()
+        await Task.yield()
+
+        let page = BrowsePage(
+            hierarchy: .artists,
+            list: BrowseList(
+                title: "Artists",
+                subtitle: nil,
+                count: 500,
+                level: 0,
+                displayOffset: 0
+            ),
+            items: (0..<100).map { index in
+                BrowseItem(
+                    title: "Artist \(index)",
+                    subtitle: nil,
+                    imageKey: "artist-\(index)",
+                    itemKey: "artist-\(index)",
+                    hint: "list",
+                    inputPrompt: nil
+                )
+            },
+            offset: 0,
+            selectedZoneID: nil
+        )
+
+        controller.emit(.browseListChanged(BrowseListChangedEvent(page: page)))
+        try await waitForAsyncSideEffects()
+
+        model.noteBrowseItemVisible(150, for: page)
+        model.noteBrowseItemVisible(151, for: page)
+        model.noteBrowseItemVisible(152, for: page)
+
         try await waitForAsyncSideEffects()
 
         let sortedLoadCalls = controller.browseLoadPageCalls.sorted { lhs, rhs in

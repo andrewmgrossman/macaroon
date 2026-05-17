@@ -552,9 +552,7 @@ private struct BrowserView: View {
                                 ForEach(0..<page.list.count, id: \.self) { index in
                                     BrowseGridSlot(index: index)
                                         .onAppear {
-                                            model.noteBrowseItemVisible(index, for: page)
-                                            model.ensureBrowseItemsLoaded(for: index)
-                                            model.prefetchArtworkAroundVisibleIndex(index, for: page)
+                                            model.noteBrowseItemVisible(index, for: page, prefetchArtwork: true)
                                         }
                                 }
                             }
@@ -566,7 +564,6 @@ private struct BrowserView: View {
                                     BrowseRowSlot(index: index)
                                         .onAppear {
                                             model.noteBrowseItemVisible(index, for: page)
-                                            model.ensureBrowseItemsLoaded(for: index)
                                         }
                                 }
                             }
@@ -2673,6 +2670,9 @@ struct SettingsView: View {
                 }
                 .onAppear {
                     cacheLimitMegabytes = model.artworkCacheLimitMegabytes
+                    Task {
+                        await model.refreshArtworkCacheStatsForSettings()
+                    }
                 }
                 .onChange(of: model.artworkCacheLimitBytes) { _, newValue in
                     cacheLimitMegabytes = Double(newValue) / (1024 * 1024)
@@ -3105,11 +3105,16 @@ private struct ArtworkView: View {
         .frame(width: size.width, height: size.height)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .task(id: artworkTaskID) {
-            image = await model.loadArtwork(
+            image = nil
+            let loadedImage = await model.loadArtwork(
                 imageKey: imageKey,
                 width: Int(size.width * 2),
                 height: Int(size.height * 2)
             )
+            guard Task.isCancelled == false else {
+                return
+            }
+            image = loadedImage
         }
         .accessibilityLabel(title)
     }

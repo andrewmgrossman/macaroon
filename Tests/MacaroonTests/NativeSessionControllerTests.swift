@@ -139,6 +139,48 @@ struct NativeSessionControllerTests {
 
     @Test
     @MainActor
+    func automaticConnectUsesSavedEndpointBeforeDiscovery() async throws {
+        let discoveryClient = FakeDiscoveryClient(
+            messages: [
+                SoodDiscoveryMessage(
+                    uniqueID: "core-2",
+                    displayName: "fallback",
+                    host: "10.0.7.200",
+                    port: 9330
+                )
+            ],
+            delayMilliseconds: 300
+        )
+        let transport = MockNativeMooTransport(messages: [
+            try registryInfoMessage(requestID: "0"),
+            try registryRegisteredMessage(requestID: "1")
+        ])
+        let registryClient = NativeRegistryClient(transportFactory: { transport })
+        let controller = NativeRoonSessionController(
+            discoveryClient: discoveryClient,
+            registryClient: registryClient
+        )
+        let persisted = PersistedSessionState(
+            pairedCoreID: "core-1",
+            tokens: ["core-1": "token-1"],
+            endpoints: ["core-1": CoreEndpoint(host: "10.0.7.148", port: 9330)]
+        )
+
+        var events: [RoonSessionEvent] = []
+        controller.eventHandler = { event in
+            events.append(event)
+        }
+
+        try await controller.start()
+        try await controller.connectAutomatically(persistedState: persisted)
+
+        #expect(await transport.connectedEndpoint == RoonCoreEndpoint(host: "10.0.7.148", port: 9330))
+        #expect(await discoveryClient.discoverCallCount() == 0)
+        #expect(events.contains(.connectionChanged(ConnectionChangedEvent(status: .connecting(mode: "saved server")))))
+    }
+
+    @Test
+    @MainActor
     func queueSubscribeIgnoresStaleCallbacksAndEmitsCurrentZoneEvents() async throws {
         let transport = MockNativeMooTransport(messages: [
             try registryInfoMessage(requestID: "0"),
@@ -446,15 +488,26 @@ private struct QueueSubscribeBody: Decodable {
 
 private actor FakeDiscoveryClient: RoonDiscoveryClientProtocol {
     private let messages: [SoodDiscoveryMessage]
+    private let delayMilliseconds: Int
+    private var calls = 0
 
-    init(messages: [SoodDiscoveryMessage]) {
+    init(messages: [SoodDiscoveryMessage], delayMilliseconds: Int = 0) {
         self.messages = messages
+        self.delayMilliseconds = delayMilliseconds
     }
 
     func start() async {}
     func stop() async {}
 
     func discover(timeout: TimeInterval) async -> [SoodDiscoveryMessage] {
-        messages
+        calls += 1
+        if delayMilliseconds > 0 {
+            try? await Task.sleep(for: .milliseconds(delayMilliseconds))
+        }
+        return messages
+    }
+
+    func discoverCallCount() -> Int {
+        calls
     }
 }

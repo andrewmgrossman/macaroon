@@ -64,7 +64,16 @@ actor ArtworkPipeline {
     private struct InFlightRequest {
         var id: UUID
         var task: Task<ArtworkPipelineResult?, Never>
-        var isPrefetchOnly: Bool
+        var visibleInterests: Set<UUID>
+        var prefetchInterests: Set<UUID>
+
+        var isPrefetchOnly: Bool {
+            visibleInterests.isEmpty
+        }
+
+        var hasInterests: Bool {
+            visibleInterests.isEmpty == false || prefetchInterests.isEmpty == false
+        }
     }
 
     private struct SlotWaiter {
@@ -112,31 +121,66 @@ actor ArtworkPipeline {
             return cached
         }
 
+        let interestID = UUID()
+        let task: Task<ArtworkPipelineResult?, Never>
+        let requestID: UUID
+        let pipeline = self
+
         if var existing = inFlight[cacheKey] {
             if priority == .visible {
-                existing.isPrefetchOnly = false
-                inFlight[cacheKey] = existing
+                prefetchTasks.removeValue(forKey: cacheKey)?.cancel()
+                existing.visibleInterests.insert(interestID)
+            } else {
+                existing.prefetchInterests.insert(interestID)
             }
-            return await existing.task.value
-        }
+            inFlight[cacheKey] = existing
+            task = existing.task
+            requestID = existing.id
+        } else {
+            if priority == .visible {
+                cancelPrefetchesIfSaturated(keeping: cacheKey)
+            }
 
-        let task = Task(priority: priority.taskPriority) { [weak self] in
-            await self?.performLoad(
-                request: request,
-                priority: priority,
-                fetchArtwork: fetchArtwork
+            task = Task(priority: priority.taskPriority) { [weak self] in
+                await self?.performLoad(
+                    request: request,
+                    priority: priority,
+                    fetchArtwork: fetchArtwork
+                )
+            }
+            requestID = UUID()
+            inFlight[cacheKey] = InFlightRequest(
+                id: requestID,
+                task: task,
+                visibleInterests: priority == .visible ? [interestID] : [],
+                prefetchInterests: priority == .prefetch ? [interestID] : []
             )
         }
-        let requestID = UUID()
-        inFlight[cacheKey] = InFlightRequest(
-            id: requestID,
-            task: task,
-            isPrefetchOnly: priority == .prefetch
-        )
 
-        let result = await task.value
-        if let current = inFlight[cacheKey], current.id == requestID {
-            inFlight.removeValue(forKey: cacheKey)
+        let result: ArtworkPipelineResult? = await withTaskCancellationHandler {
+            let result = await task.value
+            releaseInterest(
+                cacheKey: cacheKey,
+                requestID: requestID,
+                interestID: interestID,
+                priority: priority
+            )
+            if Task.isCancelled {
+                return nil
+            }
+            if let current = inFlight[cacheKey], current.id == requestID {
+                inFlight.removeValue(forKey: cacheKey)
+            }
+            return result
+        } onCancel: {
+            Task {
+                await pipeline.releaseInterest(
+                    cacheKey: cacheKey,
+                    requestID: requestID,
+                    interestID: interestID,
+                    priority: priority
+                )
+            }
         }
         return result
     }
@@ -180,6 +224,40 @@ actor ArtworkPipeline {
                 inFlight.removeValue(forKey: cacheKey)
             }
         }
+    }
+
+    private func cancelPrefetchesIfSaturated(keeping cacheKey: String) {
+        guard activeFetches >= maxConcurrentFetches else {
+            return
+        }
+        cancelPrefetches(keeping: [cacheKey])
+    }
+
+    private func releaseInterest(
+        cacheKey: String,
+        requestID: UUID,
+        interestID: UUID,
+        priority: ArtworkPipelinePriority
+    ) {
+        guard var request = inFlight[cacheKey], request.id == requestID else {
+            return
+        }
+
+        switch priority {
+        case .visible:
+            request.visibleInterests.remove(interestID)
+        case .prefetch:
+            request.prefetchInterests.remove(interestID)
+        }
+
+        if request.hasInterests {
+            inFlight[cacheKey] = request
+            return
+        }
+
+        request.task.cancel()
+        inFlight.removeValue(forKey: cacheKey)
+        prefetchTasks.removeValue(forKey: cacheKey)?.cancel()
     }
 
     private func prefetchDidFinish(cacheKey: String) {

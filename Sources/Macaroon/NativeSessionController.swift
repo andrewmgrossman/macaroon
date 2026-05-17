@@ -23,6 +23,7 @@ final class NativeRoonSessionController: RoonSessionController {
     private let imageClient: NativeImageClient
     private let transportClient: NativeTransportClient
     private let queueClient: NativeQueueClient
+    private let zoneClient: NativeZoneClient
     private var currentCore: CoreSummary?
     private var persistedState = PersistedSessionState.empty
     private var liveZonesByID: [String: ZoneSummary] = [:]
@@ -44,7 +45,8 @@ final class NativeRoonSessionController: RoonSessionController {
         browseClient: NativeBrowseClient = NativeBrowseClient(),
         imageClient: NativeImageClient = NativeImageClient(),
         transportClient: NativeTransportClient = NativeTransportClient(),
-        queueClient: NativeQueueClient = NativeQueueClient()
+        queueClient: NativeQueueClient = NativeQueueClient(),
+        zoneClient: NativeZoneClient = NativeZoneClient()
     ) {
         self.discoveryClient = discoveryClient
         self.transport = transport
@@ -53,6 +55,7 @@ final class NativeRoonSessionController: RoonSessionController {
         self.imageClient = imageClient
         self.transportClient = transportClient
         self.queueClient = queueClient
+        self.zoneClient = zoneClient
     }
 
     func start() async throws {
@@ -86,49 +89,49 @@ final class NativeRoonSessionController: RoonSessionController {
         reconnectTask?.cancel()
         reconnectTask = nil
 
-        let candidates = await automaticConnectionCandidates(persistedState: persistedState)
-        MacaroonLog.connection.info("Automatic connect candidates=\(candidates.count, privacy: .public)")
+        var lastError: Error?
+        if let savedCandidate = savedAutomaticConnectionCandidate(persistedState: persistedState) {
+            do {
+                try await connect(to: savedCandidate, persistedState: persistedState)
+                return
+            } catch let error as NativeRegistryError {
+                MacaroonDebugLogger.logError(
+                    "session.auto_connect_candidate_failed",
+                    details: ["mode": savedCandidate.mode],
+                    error: error
+                )
+                if case .authorizationRequired = error {
+                    try await handleRegistryError(error)
+                    return
+                }
+                lastError = error
+            } catch {
+                MacaroonDebugLogger.logError(
+                    "session.auto_connect_candidate_failed",
+                    details: ["mode": savedCandidate.mode],
+                    error: error
+                )
+                lastError = error
+            }
+        }
+
+        let candidates = await discoveredAutomaticConnectionCandidates(persistedState: persistedState)
+        MacaroonLog.connection.info("Automatic discovery candidates=\(candidates.count, privacy: .public)")
         guard candidates.isEmpty == false else {
+            if let lastError {
+                MacaroonDebugLogger.logError("session.auto_connect_failed", error: lastError)
+                eventHandler?(.connectionChanged(ConnectionChangedEvent(status: .error(message: lastError.localizedDescription))))
+                throw lastError
+            }
             eventHandler?(.connectionChanged(ConnectionChangedEvent(status: .error(
                 message: "No reachable Roon Core was discovered. Check that your Core is running, or enter its host and port manually."
             ))))
             return
         }
 
-        var lastError: Error?
         for candidate in candidates {
-            eventHandler?(.connectionChanged(ConnectionChangedEvent(
-                status: .connecting(mode: candidate.mode)
-            )))
-
             do {
-                let result: NativeRegistryConnectionResult
-                switch candidate.source {
-                case let .saved(endpoint):
-                    result = try await registryClient.connectSavedEndpoint(
-                        endpoint: endpoint,
-                        persistedState: persistedState
-                    )
-                case let .discovered(discovery):
-                    result = try await registryClient.connectDiscovered(
-                        discovery: discovery,
-                        persistedState: persistedState
-                    )
-                }
-
-                self.persistedState = result.persistedState
-                currentCore = result.core
-                MacaroonDebugLogger.logApp(
-                    "session.connected",
-                    details: [
-                        "mode": candidate.mode,
-                        "core_id": result.core.coreID,
-                        "display_name": result.core.displayName
-                    ]
-                )
-                MacaroonLog.connection.info("Connected mode=\(candidate.mode, privacy: .public) core=\(result.core.displayName, privacy: .public)")
-                eventHandler?(.persistRequested(PersistRequestedEvent(persistedState: result.persistedState)))
-                eventHandler?(.connectionChanged(ConnectionChangedEvent(status: .connected(result.core))))
+                try await connect(to: candidate, persistedState: persistedState)
                 return
             } catch let error as NativeRegistryError {
                 MacaroonDebugLogger.logError(
@@ -156,6 +159,43 @@ final class NativeRoonSessionController: RoonSessionController {
             eventHandler?(.connectionChanged(ConnectionChangedEvent(status: .error(message: lastError.localizedDescription))))
             throw lastError
         }
+    }
+
+    private func connect(
+        to candidate: AutomaticConnectionCandidate,
+        persistedState: PersistedSessionState
+    ) async throws {
+        eventHandler?(.connectionChanged(ConnectionChangedEvent(
+            status: .connecting(mode: candidate.mode)
+        )))
+
+        let result: NativeRegistryConnectionResult
+        switch candidate.source {
+        case let .saved(endpoint):
+            result = try await registryClient.connectSavedEndpoint(
+                endpoint: endpoint,
+                persistedState: persistedState
+            )
+        case let .discovered(discovery):
+            result = try await registryClient.connectDiscovered(
+                discovery: discovery,
+                persistedState: persistedState
+            )
+        }
+
+        self.persistedState = result.persistedState
+        currentCore = result.core
+        MacaroonDebugLogger.logApp(
+            "session.connected",
+            details: [
+                "mode": candidate.mode,
+                "core_id": result.core.coreID,
+                "display_name": result.core.displayName
+            ]
+        )
+        MacaroonLog.connection.info("Connected mode=\(candidate.mode, privacy: .public) core=\(result.core.displayName, privacy: .public)")
+        eventHandler?(.persistRequested(PersistRequestedEvent(persistedState: result.persistedState)))
+        eventHandler?(.connectionChanged(ConnectionChangedEvent(status: .connected(result.core))))
     }
 
     func connectManually(host: String, port: Int, persistedState: PersistedSessionState) async throws {
@@ -223,12 +263,12 @@ final class NativeRoonSessionController: RoonSessionController {
             return
         }
 
-        try await session.subscribe(
-            "com.roonlabs.transport:2/subscribe_zones",
-            body: NativeSubscriptionKeyRequest(subscription_key: 0)
+        try await zoneClient.subscribe(
+            session: session,
+            subscriptionKey: 0
         ) { [weak self] message in
-            Task { @MainActor in
-                self?.handleZonesSubscriptionMessage(message)
+            Task { @MainActor [weak self] in
+                await self?.handleZonesSubscriptionMessage(message)
             }
         }
     }
@@ -588,7 +628,22 @@ final class NativeRoonSessionController: RoonSessionController {
         var source: Source
     }
 
-    private func automaticConnectionCandidates(
+    private func savedAutomaticConnectionCandidate(
+        persistedState: PersistedSessionState
+    ) -> AutomaticConnectionCandidate? {
+        guard let pairedCoreID = persistedState.pairedCoreID,
+              let endpoint = persistedState.endpoints[pairedCoreID]
+        else {
+            return nil
+        }
+
+        return AutomaticConnectionCandidate(
+            mode: "saved server",
+            source: .saved(endpoint)
+        )
+    }
+
+    private func discoveredAutomaticConnectionCandidates(
         persistedState: PersistedSessionState
     ) async -> [AutomaticConnectionCandidate] {
         var candidates: [AutomaticConnectionCandidate] = []
@@ -596,10 +651,6 @@ final class NativeRoonSessionController: RoonSessionController {
 
         if let pairedCoreID = persistedState.pairedCoreID,
            let endpoint = persistedState.endpoints[pairedCoreID] {
-            candidates.append(AutomaticConnectionCandidate(
-                mode: "saved server",
-                source: .saved(endpoint)
-            ))
             seen.insert("\(endpoint.host):\(endpoint.port)")
         }
 
@@ -690,57 +741,28 @@ final class NativeRoonSessionController: RoonSessionController {
         }
     }
 
-    private func handleZonesSubscriptionMessage(_ message: MooMessageEnvelope) {
+    private func handleZonesSubscriptionMessage(_ message: MooMessageEnvelope) async {
         do {
-            switch message.name {
-            case "Subscribed":
-                let payload = try decodeBody(NativeZonesSubscribedPayload.self, from: message)
-                let zones = Self.deduplicateZones(payload.zones.map(Self.toZoneSummary))
-                liveZonesByID = Dictionary(uniqueKeysWithValues: zones.map { ($0.zoneID, $0) })
-                eventHandler?(.zonesSnapshot(ZonesSnapshotEvent(zones: zones)))
-                for zone in zones {
-                    eventHandler?(.nowPlayingChanged(NowPlayingChangedEvent(zoneID: zone.zoneID, nowPlaying: zone.nowPlaying)))
-                }
-            case "Changed":
-                let payload = try decodeBody(NativeZonesChangedPayload.self, from: message)
-                let removedZoneIDs = payload.zones_removed ?? []
-                for removedID in removedZoneIDs {
-                    liveZonesByID.removeValue(forKey: removedID)
-                }
-
-                let changedZones = (payload.zones_added ?? []) + (payload.zones_changed ?? [])
-                var emitted: [ZoneSummary] = changedZones.map(Self.toZoneSummary)
-
-                for zone in emitted {
-                    liveZonesByID[zone.zoneID] = zone
-                }
-
-                if let seekChanges = payload.zones_seek_changed {
-                    for seekChange in seekChanges {
-                        guard var zone = liveZonesByID[seekChange.zone_id] else {
-                            continue
-                        }
-                        if var nowPlaying = zone.nowPlaying {
-                            nowPlaying.seekPosition = seekChange.seek_position
-                            zone.nowPlaying = nowPlaying
-                            liveZonesByID[zone.zoneID] = zone
-                            emitted.append(zone)
-                        }
-                    }
-                }
-
-                if emitted.isEmpty == false || removedZoneIDs.isEmpty == false {
-                    let deduped = Self.deduplicateZones(emitted)
-                    eventHandler?(.zonesChanged(ZonesChangedEvent(
-                        zones: deduped,
-                        removedZoneIDs: removedZoneIDs
-                    )))
-                    for zone in deduped {
-                        eventHandler?(.nowPlayingChanged(NowPlayingChangedEvent(zoneID: zone.zoneID, nowPlaying: zone.nowPlaying)))
-                    }
-                }
-            default:
+            guard let update = try await zoneClient.process(
+                message: message,
+                previousZonesByID: liveZonesByID
+            ) else {
                 return
+            }
+
+            liveZonesByID = update.liveZonesByID
+            switch update.kind {
+            case .snapshot:
+                eventHandler?(.zonesSnapshot(ZonesSnapshotEvent(zones: update.zones)))
+            case .changed:
+                eventHandler?(.zonesChanged(ZonesChangedEvent(
+                    zones: update.zones,
+                    removedZoneIDs: update.removedZoneIDs
+                )))
+            }
+
+            for zone in update.zones {
+                eventHandler?(.nowPlayingChanged(NowPlayingChangedEvent(zoneID: zone.zoneID, nowPlaying: zone.nowPlaying)))
             }
         } catch {
             MacaroonDebugLogger.logError("zones.decode_failed", error: error)
@@ -751,132 +773,4 @@ final class NativeRoonSessionController: RoonSessionController {
         }
     }
 
-    private func decodeBody<T: Decodable>(_ type: T.Type, from message: MooMessageEnvelope) throws -> T {
-        guard let body = message.body else {
-            throw NativeSessionError.emptyResponse
-        }
-        return try JSONDecoder().decode(T.self, from: body)
-    }
-
-    private static func toZoneSummary(_ zone: NativeTransportZone) -> ZoneSummary {
-        ZoneSummary(
-            zoneID: zone.zone_id,
-            displayName: zone.display_name,
-            state: zone.state,
-            outputs: (zone.outputs ?? []).map { output in
-                OutputSummary(
-                    outputID: output.output_id,
-                    zoneID: output.zone_id,
-                    displayName: output.display_name,
-                    volume: output.volume.map {
-                        OutputVolume(
-                            type: $0.type ?? "number",
-                            min: $0.min,
-                            max: $0.max,
-                            value: $0.value,
-                            step: $0.step,
-                            isMuted: $0.is_muted
-                        )
-                    }
-                )
-            },
-            capabilities: TransportCapabilitySet(
-                canPlayPause: zone.is_play_allowed || zone.is_pause_allowed,
-                canPause: zone.is_pause_allowed,
-                canPlay: zone.is_play_allowed,
-                canStop: zone.is_pause_allowed || zone.state != "stopped",
-                canNext: zone.is_next_allowed,
-                canPrevious: zone.is_previous_allowed,
-                canSeek: zone.is_seek_allowed
-            ),
-            nowPlaying: zone.now_playing.map { nowPlaying in
-                let lines = nowPlaying.three_line ?? nowPlaying.two_line ?? nowPlaying.one_line
-                return NowPlaying(
-                    title: lines?.line1 ?? "Unknown",
-                    subtitle: nowPlaying.three_line?.line2 ?? nowPlaying.two_line?.line2,
-                    detail: nowPlaying.three_line?.line3,
-                    imageKey: nowPlaying.image_key,
-                    seekPosition: nowPlaying.seek_position,
-                    length: nowPlaying.length,
-                    lines: nowPlaying.three_line.map {
-                        NowPlaying.Lines(line1: $0.line1, line2: $0.line2, line3: $0.line3)
-                    }
-                )
-            }
-        )
-    }
-
-    private static func deduplicateZones(_ zones: [ZoneSummary]) -> [ZoneSummary] {
-        var byID: [String: ZoneSummary] = [:]
-        for zone in zones {
-            byID[zone.zoneID] = zone
-        }
-        return byID.values.sorted {
-            $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
-        }
-    }
-}
-
-private struct NativeSubscriptionKeyRequest: Codable {
-    var subscription_key: Int
-}
-
-private struct NativeZonesSubscribedPayload: Codable {
-    var zones: [NativeTransportZone]
-}
-
-private struct NativeZonesChangedPayload: Codable {
-    var zones_added: [NativeTransportZone]?
-    var zones_changed: [NativeTransportZone]?
-    var zones_removed: [String]?
-    var zones_seek_changed: [NativeZoneSeekChange]?
-}
-
-private struct NativeZoneSeekChange: Codable {
-    var zone_id: String
-    var seek_position: Double?
-}
-
-private struct NativeTransportZone: Codable {
-    var zone_id: String
-    var display_name: String
-    var state: String
-    var outputs: [NativeTransportOutput]?
-    var is_previous_allowed: Bool
-    var is_next_allowed: Bool
-    var is_pause_allowed: Bool
-    var is_play_allowed: Bool
-    var is_seek_allowed: Bool
-    var now_playing: NativeTransportNowPlaying?
-}
-
-private struct NativeTransportOutput: Codable {
-    var output_id: String
-    var zone_id: String
-    var display_name: String
-    var volume: NativeTransportVolume?
-}
-
-private struct NativeTransportVolume: Codable {
-    var type: String?
-    var min: Double?
-    var max: Double?
-    var value: Double?
-    var step: Double?
-    var is_muted: Bool?
-}
-
-private struct NativeTransportNowPlaying: Codable {
-    var seek_position: Double?
-    var length: Double?
-    var image_key: String?
-    var one_line: NativeTransportLineBlock?
-    var two_line: NativeTransportLineBlock?
-    var three_line: NativeTransportLineBlock?
-}
-
-private struct NativeTransportLineBlock: Codable {
-    var line1: String
-    var line2: String?
-    var line3: String?
 }
