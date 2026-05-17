@@ -85,6 +85,7 @@ actor ArtworkCacheStore {
     private var settings: ArtworkCacheSettings
     private var entries: [String: ArtworkCacheEntry] = [:]
     private var didLoad = false
+    private var pendingAccessIndexWrites = 0
 
     init(
         directoryURL: URL? = nil,
@@ -146,7 +147,10 @@ actor ArtworkCacheStore {
 
         entry.lastAccessedAt = now()
         entries[variant.cacheKey] = entry
-        try persistIndex()
+        pendingAccessIndexWrites += 1
+        if pendingAccessIndexWrites >= 32 {
+            try persistIndex()
+        }
         return fileURL
     }
 
@@ -207,6 +211,13 @@ actor ArtworkCacheStore {
         didLoad = false
         try prepare()
         try persistIndex()
+    }
+
+    func flush() throws {
+        try prepare()
+        if pendingAccessIndexWrites > 0 {
+            try persistIndex()
+        }
     }
 
     private func prepare() throws {
@@ -277,6 +288,7 @@ actor ArtworkCacheStore {
         let data = try encoder.encode(ArtworkCacheIndex(entries: entries))
         try fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true)
         try data.write(to: indexURL, options: [.atomic])
+        pendingAccessIndexWrites = 0
     }
 
     private func currentStats() -> ArtworkCacheStats {

@@ -112,14 +112,24 @@ struct NativePairingStatePayload: Codable {
 
 actor NativeRegistryClient {
     private let transportFactory: @Sendable () -> any NativeMooTransportProtocol
+    private let requestTimeoutSeconds: TimeInterval
     private var session: NativeMooSession?
+    private var receiveFailureHandler: (@Sendable (Error) -> Void)?
 
-    init(transportFactory: @escaping @Sendable () -> any NativeMooTransportProtocol = { RoonWebSocketTransport() }) {
+    init(
+        transportFactory: @escaping @Sendable () -> any NativeMooTransportProtocol = { RoonWebSocketTransport() },
+        requestTimeoutSeconds: TimeInterval = 8
+    ) {
         self.transportFactory = transportFactory
+        self.requestTimeoutSeconds = requestTimeoutSeconds
     }
 
     func activeSession() -> NativeMooSession? {
         session
+    }
+
+    func setReceiveFailureHandler(_ handler: (@Sendable (Error) -> Void)?) {
+        receiveFailureHandler = handler
     }
 
     func connectSavedEndpoint(
@@ -151,6 +161,17 @@ actor NativeRegistryClient {
         )
     }
 
+    func connectDiscovered(
+        discovery: SoodDiscoveryMessage,
+        persistedState: PersistedSessionState
+    ) async throws -> NativeRegistryConnectionResult {
+        return try await connect(
+            endpoint: RoonCoreEndpoint(host: discovery.host, port: discovery.port),
+            token: persistedState.tokens[discovery.uniqueID],
+            persistedState: persistedState
+        )
+    }
+
     func disconnect() async {
         await session?.disconnect()
         session = nil
@@ -165,7 +186,9 @@ actor NativeRegistryClient {
 
         let session = NativeMooSession(
             transportFactory: transportFactory,
-            currentPairedCoreID: persistedState.pairedCoreID
+            currentPairedCoreID: persistedState.pairedCoreID,
+            requestTimeoutSeconds: requestTimeoutSeconds,
+            receiveFailureHandler: receiveFailureHandler
         )
         self.session = session
         try await session.connect(to: endpoint)

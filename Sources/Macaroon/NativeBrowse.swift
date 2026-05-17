@@ -449,13 +449,16 @@ actor NativeBrowseClient {
                 )
             )
 
-            let categoryPage = try await loadAllCurrentSessionItems(
+            let categoryPage = try await loadCurrentSessionItems(
                 session: session,
                 hierarchy: context.requestHierarchy,
                 multiSessionKey: context.multiSessionKey
             )
 
-            let items = (categoryPage.items ?? []).map(toBrowseItem)
+            let limit = kind == .tracks ? 30 : 24
+            let items = (categoryPage.items ?? [])
+                .prefix(limit)
+                .map(toBrowseItem)
             if items.isEmpty == false {
                 sections.append(SearchResultsSection(kind: kind, items: items))
             }

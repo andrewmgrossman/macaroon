@@ -68,6 +68,39 @@ struct NativeQueueClientTests {
     }
 
     @Test
+    func changedMessagePreservesOrderForItemLevelDeltas() async throws {
+        let client = NativeQueueClient()
+        let previous = QueueState(
+            zoneID: "zone-1",
+            title: "Queue",
+            totalCount: 3,
+            currentQueueItemID: nil,
+            items: [
+                QueueItemSummary(queueItemID: "a", title: "A", subtitle: nil, detail: nil, imageKey: nil, length: nil, isCurrent: false),
+                QueueItemSummary(queueItemID: "b", title: "B", subtitle: nil, detail: nil, imageKey: nil, length: nil, isCurrent: false),
+                QueueItemSummary(queueItemID: "c", title: "C", subtitle: nil, detail: nil, imageKey: nil, length: nil, isCurrent: false)
+            ]
+        )
+
+        let update = try await client.process(
+            message: queueMessage(
+                verb: .continue,
+                name: "Changed",
+                requestID: "0",
+                body: """
+                {"zone_id":"zone-1","items_changed":[{"queue_item_id":"b","three_line":{"line1":"B updated","line2":"Artist","line3":"Album"}}],"items_added":[{"queue_item_id":"d","three_line":{"line1":"D","line2":"Artist","line3":"Album"}}],"items_removed":["a"],"now_playing_queue_item_id":"c"}
+                """
+            ),
+            zoneOrOutputID: "zone-1",
+            previousState: previous
+        )
+
+        #expect(update?.queue?.items.map(\.queueItemID) == ["b", "c", "d"])
+        #expect(update?.queue?.items.map(\.title) == ["B updated", "C", "D"])
+        #expect(update?.queue?.items.first(where: { $0.queueItemID == "c" })?.isCurrent == true)
+    }
+
+    @Test
     func unsubscribedMessageClearsQueue() async throws {
         let client = NativeQueueClient()
         let update = try await client.process(

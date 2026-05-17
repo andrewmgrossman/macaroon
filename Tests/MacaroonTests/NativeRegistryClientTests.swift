@@ -141,6 +141,26 @@ struct NativeRegistryClientTests {
         let subscribeRequest = try MooCodec.decodeMessage(try #require(sent.first))
         #expect(subscribeRequest.name == "com.roonlabs.transport:2/subscribe_zones")
     }
+
+    @Test
+    func mooSessionRequestTimesOutWhenCoreDoesNotRespond() async throws {
+        let transport = MockNativeMooTransport(messages: [])
+        let session = NativeMooSession(
+            transportFactory: { transport },
+            currentPairedCoreID: nil,
+            requestTimeoutSeconds: 0.05
+        )
+        try await session.connect(to: RoonCoreEndpoint(host: "10.0.7.148", port: 9330))
+
+        await #expect(throws: NativeSessionTransportError.requestTimedOut("0")) {
+            _ = try await session.request(
+                "com.roonlabs.registry:1/info",
+                body: Optional<EmptyParams>.none
+            )
+        }
+
+        await session.disconnect()
+    }
 }
 
 actor MockNativeMooTransport: NativeMooTransportProtocol {
@@ -158,7 +178,13 @@ actor MockNativeMooTransport: NativeMooTransportProtocol {
         connectedEndpoint = endpoint
     }
 
-    func disconnect() async {}
+    func disconnect() async {
+        let continuations = waitingContinuations
+        waitingContinuations.removeAll()
+        continuations.forEach {
+            $0.resume(throwing: NativeSessionTransportError.unavailable)
+        }
+    }
 
     func pushIncoming(_ data: Data) {
         if waitingContinuations.isEmpty == false {

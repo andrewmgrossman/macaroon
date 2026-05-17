@@ -3,10 +3,23 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 CONFIGURATION="debug"
+OPEN_AFTER_BUILD=1
 
-if [[ "${1:-}" == "--release" ]]; then
-  CONFIGURATION="release"
-fi
+for arg in "$@"; do
+  case "$arg" in
+    --release)
+      CONFIGURATION="release"
+      ;;
+    --no-open)
+      OPEN_AFTER_BUILD=0
+      ;;
+    *)
+      echo "Unknown argument: $arg" >&2
+      echo "Usage: $0 [--release] [--no-open]" >&2
+      exit 2
+      ;;
+  esac
+done
 
 export CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-$ROOT_DIR/.build/clang-module-cache}"
 export SWIFTPM_ENABLE_PLUGINS="${SWIFTPM_ENABLE_PLUGINS:-0}"
@@ -92,4 +105,6 @@ rm -rf "$APP_DIR"
 mv "$STAGING_DIR" "$APP_DIR"
 
 echo "Built $APP_DIR"
-open "$APP_DIR"
+if [[ "$OPEN_AFTER_BUILD" == "1" ]]; then
+  open "$APP_DIR"
+fi

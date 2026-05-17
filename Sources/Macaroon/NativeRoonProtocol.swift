@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 enum MooVerb: String, Equatable, Sendable {
@@ -294,9 +295,148 @@ struct RoonCoreEndpoint: Equatable, Sendable {
     var port: Int
 }
 
-actor RoonDiscoveryClient {
-    func start() async {}
-    func stop() async {}
+protocol RoonDiscoveryClientProtocol: Actor {
+    func start() async
+    func stop() async
+    func discover(timeout: TimeInterval) async -> [SoodDiscoveryMessage]
+}
+
+actor RoonDiscoveryClient: RoonDiscoveryClientProtocol {
+    private var isStarted = false
+
+    func start() async {
+        isStarted = true
+    }
+
+    func stop() async {
+        isStarted = false
+    }
+
+    func discover(timeout: TimeInterval = 0.9) async -> [SoodDiscoveryMessage] {
+        if isStarted == false {
+            await start()
+        }
+
+        return await Task.detached(priority: .utility) {
+            Self.discoverBlocking(timeout: timeout)
+        }.value
+    }
+
+    private static func discoverBlocking(timeout: TimeInterval) -> [SoodDiscoveryMessage] {
+        let socketFD = Darwin.socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+        guard socketFD >= 0 else {
+            return []
+        }
+        defer {
+            Darwin.close(socketFD)
+        }
+
+        var reuse: Int32 = 1
+        _ = withUnsafePointer(to: &reuse) { pointer in
+            Darwin.setsockopt(socketFD, SOL_SOCKET, SO_REUSEADDR, pointer, socklen_t(MemoryLayout<Int32>.size))
+        }
+
+        var localAddress = sockaddr_in()
+        localAddress.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        localAddress.sin_family = sa_family_t(AF_INET)
+        localAddress.sin_port = in_port_t(0).bigEndian
+        localAddress.sin_addr = in_addr(s_addr: in_addr_t(0))
+
+        let bindResult = withUnsafePointer(to: &localAddress) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { rebound in
+                Darwin.bind(socketFD, rebound, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard bindResult == 0 else {
+            return []
+        }
+
+        var remoteAddress = sockaddr_in()
+        remoteAddress.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        remoteAddress.sin_family = sa_family_t(AF_INET)
+        remoteAddress.sin_port = in_port_t(SoodCodec.port).bigEndian
+        guard inet_pton(AF_INET, SoodCodec.multicastAddress, &remoteAddress.sin_addr) == 1 else {
+            return []
+        }
+
+        let probe = SoodCodec.discoveryProbe()
+        probe.withUnsafeBytes { buffer in
+            guard let baseAddress = buffer.baseAddress else {
+                return
+            }
+            withUnsafePointer(to: &remoteAddress) { pointer in
+                pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { rebound in
+                    _ = Darwin.sendto(
+                        socketFD,
+                        baseAddress,
+                        buffer.count,
+                        0,
+                        rebound,
+                        socklen_t(MemoryLayout<sockaddr_in>.size)
+                    )
+                }
+            }
+        }
+
+        let deadline = Date().addingTimeInterval(max(0.05, timeout))
+        var byUniqueID: [String: SoodDiscoveryMessage] = [:]
+
+        while Date() < deadline {
+            let remainingMilliseconds = max(1, Int32(deadline.timeIntervalSinceNow * 1000))
+            var pollDescriptor = pollfd(fd: socketFD, events: Int16(POLLIN), revents: 0)
+            let pollResult = Darwin.poll(&pollDescriptor, 1, remainingMilliseconds)
+            guard pollResult > 0 else {
+                break
+            }
+            guard (pollDescriptor.revents & Int16(POLLIN)) != 0 else {
+                continue
+            }
+
+            var buffer = [UInt8](repeating: 0, count: 8192)
+            let bufferCapacity = buffer.count
+            var sourceAddress = sockaddr_in()
+            var sourceLength = socklen_t(MemoryLayout<sockaddr_in>.size)
+            let byteCount = withUnsafeMutablePointer(to: &sourceAddress) { pointer in
+                pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { rebound in
+                    buffer.withUnsafeMutableBytes { bytes in
+                        Darwin.recvfrom(
+                            socketFD,
+                            bytes.baseAddress,
+                            bufferCapacity,
+                            0,
+                            rebound,
+                            &sourceLength
+                        )
+                    }
+                }
+            }
+
+            guard byteCount > 0 else {
+                continue
+            }
+
+            let host = hostString(from: sourceAddress)
+            let sourcePort = Int(UInt16(bigEndian: sourceAddress.sin_port))
+            let data = Data(buffer.prefix(Int(byteCount)))
+            if let message = try? SoodCodec.decode(data, fromHost: host, port: sourcePort) {
+                byUniqueID[message.uniqueID] = message
+            }
+        }
+
+        return byUniqueID.values.sorted {
+            $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+        }
+    }
+
+    private static func hostString(from address: sockaddr_in) -> String {
+        var addr = address.sin_addr
+        var buffer = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+        guard inet_ntop(AF_INET, &addr, &buffer, socklen_t(INET_ADDRSTRLEN)) != nil else {
+            return ""
+        }
+        let endIndex = buffer.firstIndex(of: 0) ?? buffer.endIndex
+        return String(decoding: buffer[..<endIndex].map(UInt8.init), as: UTF8.self)
+    }
 }
 
 actor RoonWebSocketTransport {

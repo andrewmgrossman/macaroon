@@ -2,20 +2,35 @@ import Foundation
 
 enum NativeSessionTransportError: LocalizedError, Equatable, Sendable {
     case unavailable
+    case requestTimedOut(String)
+    case requestCancelled(String)
 
     var errorDescription: String? {
         switch self {
         case .unavailable:
             return "The native session transport is unavailable."
+        case let .requestTimedOut(requestID):
+            return "The native session request timed out: \(requestID)."
+        case let .requestCancelled(requestID):
+            return "The native session request was cancelled: \(requestID)."
         }
     }
 }
 
 actor NativeMooSession {
+    private struct PendingRequest {
+        var continuation: CheckedContinuation<MooMessageEnvelope, Error>
+        var timeoutTask: Task<Void, Never>
+    }
+
     private let transportFactory: @Sendable () -> any NativeMooTransportProtocol
+    private let requestTimeoutSeconds: TimeInterval
+    private let maxBufferedRequestIDs: Int
+    private let maxBufferedMessagesPerRequest: Int
+    private let receiveFailureHandler: (@Sendable (Error) -> Void)?
     private var transport: (any NativeMooTransportProtocol)?
     private var nextRequestID = 0
-    private var pendingRequests: [String: CheckedContinuation<MooMessageEnvelope, Error>] = [:]
+    private var pendingRequests: [String: PendingRequest] = [:]
     private var subscriptionHandlers: [String: @Sendable (MooMessageEnvelope) -> Void] = [:]
     private var bufferedMessages: [String: [MooMessageEnvelope]] = [:]
     private var receiveLoopTask: Task<Void, Never>?
@@ -24,10 +39,18 @@ actor NativeMooSession {
 
     init(
         transportFactory: @escaping @Sendable () -> any NativeMooTransportProtocol,
-        currentPairedCoreID: String?
+        currentPairedCoreID: String?,
+        requestTimeoutSeconds: TimeInterval = 8,
+        maxBufferedRequestIDs: Int = 64,
+        maxBufferedMessagesPerRequest: Int = 16,
+        receiveFailureHandler: (@Sendable (Error) -> Void)? = nil
     ) {
         self.transportFactory = transportFactory
         self.currentPairedCoreID = currentPairedCoreID
+        self.requestTimeoutSeconds = requestTimeoutSeconds
+        self.maxBufferedRequestIDs = max(1, maxBufferedRequestIDs)
+        self.maxBufferedMessagesPerRequest = max(1, maxBufferedMessagesPerRequest)
+        self.receiveFailureHandler = receiveFailureHandler
     }
 
     func connect(to endpoint: RoonCoreEndpoint) async throws {
@@ -56,8 +79,12 @@ actor NativeMooSession {
 
         let continuations = pendingRequests.values
         pendingRequests.removeAll()
-        continuations.forEach { $0.resume(throwing: NativeSessionTransportError.unavailable) }
+        continuations.forEach {
+            $0.timeoutTask.cancel()
+            $0.continuation.resume(throwing: NativeSessionTransportError.unavailable)
+        }
         subscriptionHandlers.removeAll()
+        bufferedMessages.removeAll()
 
         await transport?.disconnect()
         transport = nil
@@ -79,17 +106,26 @@ actor NativeMooSession {
         let requestID = nextRequestIdentifier()
         let payload = try encodeRequestPayload(name: name, body: body, requestID: requestID)
         MacaroonDebugLogger.logProtocolData(direction: "outbound", label: "moo.request", data: payload)
+        MacaroonLog.transport.debug("MOO request id=\(requestID, privacy: .public) name=\(name, privacy: .public)")
 
-        return try await withCheckedThrowingContinuation { continuation in
-            pendingRequests[requestID] = continuation
-            Task {
-                do {
-                    try await transport.send(payload)
-                    await self.flushBufferedMessages(for: requestID)
-                } catch {
-                    let continuation = self.pendingRequests.removeValue(forKey: requestID)
-                    continuation?.resume(throwing: error)
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                registerPendingRequest(requestID, continuation: continuation)
+                Task {
+                    do {
+                        try await transport.send(payload)
+                        await self.flushBufferedMessages(for: requestID)
+                    } catch {
+                        self.failPendingRequest(requestID, error: error)
+                    }
                 }
+            }
+        } onCancel: {
+            Task {
+                await self.failPendingRequest(
+                    requestID,
+                    error: NativeSessionTransportError.requestCancelled(requestID)
+                )
             }
         }
     }
@@ -133,7 +169,11 @@ actor NativeMooSession {
                 MacaroonDebugLogger.logError("session.receive_loop_failed", error: error)
                 let continuations = pendingRequests.values
                 pendingRequests.removeAll()
-                continuations.forEach { $0.resume(throwing: error) }
+                continuations.forEach {
+                    $0.timeoutTask.cancel()
+                    $0.continuation.resume(throwing: error)
+                }
+                receiveFailureHandler?(error)
                 return
             }
         }
@@ -156,11 +196,12 @@ actor NativeMooSession {
                 return
             }
 
-            guard let continuation = pendingRequests.removeValue(forKey: requestID) else {
-                bufferedMessages[requestID, default: []].append(message)
+            guard let pending = pendingRequests.removeValue(forKey: requestID) else {
+                buffer(message, for: requestID)
                 return
             }
-            continuation.resume(returning: message)
+            pending.timeoutTask.cancel()
+            pending.continuation.resume(returning: message)
         }
     }
 
@@ -245,12 +286,58 @@ actor NativeMooSession {
                 continue
             }
 
-            if let continuation = pendingRequests.removeValue(forKey: requestID) {
-                continuation.resume(returning: message)
+            if let pending = pendingRequests.removeValue(forKey: requestID) {
+                pending.timeoutTask.cancel()
+                pending.continuation.resume(returning: message)
             } else {
-                bufferedMessages[requestID, default: []].append(message)
+                buffer(message, for: requestID)
             }
         }
+    }
+
+    private func registerPendingRequest(
+        _ requestID: String,
+        continuation: CheckedContinuation<MooMessageEnvelope, Error>
+    ) {
+        let timeoutTask = Task { [requestTimeoutSeconds] in
+            guard requestTimeoutSeconds > 0 else {
+                return
+            }
+            let nanoseconds = UInt64((requestTimeoutSeconds * 1_000_000_000).rounded())
+            try? await Task.sleep(nanoseconds: nanoseconds)
+            self.failPendingRequest(
+                requestID,
+                error: NativeSessionTransportError.requestTimedOut(requestID)
+            )
+        }
+
+        pendingRequests[requestID] = PendingRequest(
+            continuation: continuation,
+            timeoutTask: timeoutTask
+        )
+    }
+
+    private func failPendingRequest(_ requestID: String, error: Error) {
+        guard let pending = pendingRequests.removeValue(forKey: requestID) else {
+            return
+        }
+        pending.timeoutTask.cancel()
+        pending.continuation.resume(throwing: error)
+    }
+
+    private func buffer(_ message: MooMessageEnvelope, for requestID: String) {
+        if bufferedMessages[requestID] == nil,
+           bufferedMessages.count >= maxBufferedRequestIDs,
+           let firstKey = bufferedMessages.keys.sorted().first {
+            bufferedMessages.removeValue(forKey: firstKey)
+        }
+
+        var messages = bufferedMessages[requestID, default: []]
+        messages.append(message)
+        if messages.count > maxBufferedMessagesPerRequest {
+            messages.removeFirst(messages.count - maxBufferedMessagesPerRequest)
+        }
+        bufferedMessages[requestID] = messages
     }
 
     private func encodeRequestPayload<Body: Encodable>(

@@ -430,7 +430,7 @@ struct AppModelTests {
             makeZoneSummary(id: firstZoneID, name: "Desk"),
             makeZoneSummary(id: secondZoneID, name: "Living Room")
         ])))
-        await Task.yield()
+        try await waitForAsyncSideEffects()
 
         #expect(model.selectedZoneID == firstZoneID)
         #expect(model.zones.map(\.zoneID) == [firstZoneID, secondZoneID])
@@ -439,7 +439,7 @@ struct AppModelTests {
             zones: [],
             removedZoneIDs: [firstZoneID]
         )))
-        await Task.yield()
+        try await waitForAsyncSideEffects()
 
         #expect(model.zones.map(\.zoneID) == [secondZoneID])
         #expect(model.selectedZoneID == secondZoneID)
@@ -460,7 +460,7 @@ struct AppModelTests {
         controller.emit(.zonesSnapshot(ZonesSnapshotEvent(zones: [
             makeZoneSummary(id: onlyZoneID, name: "Desk")
         ])))
-        await Task.yield()
+        try await waitForAsyncSideEffects()
 
         model.queueState = QueueState(
             zoneID: onlyZoneID,
@@ -484,7 +484,7 @@ struct AppModelTests {
             zones: [],
             removedZoneIDs: [onlyZoneID]
         )))
-        await Task.yield()
+        try await waitForAsyncSideEffects()
 
         #expect(model.zones.isEmpty)
         #expect(model.selectedZoneID == nil)
@@ -547,16 +547,15 @@ struct AppModelTests {
         )
 
         controller.emit(.browseListChanged(BrowseListChangedEvent(page: listPage)))
-        await Task.yield()
+        try await waitForAsyncSideEffects()
 
         model.noteBrowseItemVisible(150, for: listPage)
 
         controller.emit(.browseListChanged(BrowseListChangedEvent(page: detailPage)))
-        await Task.yield()
+        try await waitForAsyncSideEffects()
 
         controller.emit(.browseListChanged(BrowseListChangedEvent(page: listPage)))
-        await Task.yield()
-        await Task.yield()
+        try await waitForAsyncSideEffects()
 
         let sortedLoadCalls = controller.browseLoadPageCalls.sorted { lhs, rhs in
             lhs.offset < rhs.offset

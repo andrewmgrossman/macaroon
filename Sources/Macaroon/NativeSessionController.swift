@@ -16,7 +16,7 @@ final class NativeRoonSessionController: RoonSessionController {
     var eventHandler: (@MainActor (RoonSessionEvent) -> Void)?
 
     private var isStarted = false
-    private let discoveryClient: RoonDiscoveryClient
+    private let discoveryClient: any RoonDiscoveryClientProtocol
     private let transport: RoonWebSocketTransport
     private let registryClient: NativeRegistryClient
     private let browseClient: NativeBrowseClient
@@ -28,9 +28,17 @@ final class NativeRoonSessionController: RoonSessionController {
     private var liveZonesByID: [String: ZoneSummary] = [:]
     private var liveQueueState: QueueState?
     private var queueSubscriptionGeneration = 0
+    private var lastConnectIntent: ConnectIntent?
+    private var reconnectTask: Task<Void, Never>?
+    private var hasConfiguredRegistryFailureHandler = false
+
+    private enum ConnectIntent {
+        case automatic
+        case manual(host: String, port: Int)
+    }
 
     init(
-        discoveryClient: RoonDiscoveryClient = RoonDiscoveryClient(),
+        discoveryClient: any RoonDiscoveryClientProtocol = RoonDiscoveryClient(),
         transport: RoonWebSocketTransport = RoonWebSocketTransport(),
         registryClient: NativeRegistryClient = NativeRegistryClient(),
         browseClient: NativeBrowseClient = NativeBrowseClient(),
@@ -51,6 +59,7 @@ final class NativeRoonSessionController: RoonSessionController {
         guard isStarted == false else {
             return
         }
+        await configureRegistryFailureHandlerIfNeeded()
         isStarted = true
         await discoveryClient.start()
         MacaroonDebugLogger.logApp("native_session.start")
@@ -64,48 +73,97 @@ final class NativeRoonSessionController: RoonSessionController {
         liveZonesByID = [:]
         liveQueueState = nil
         queueSubscriptionGeneration += 1
+        reconnectTask?.cancel()
+        reconnectTask = nil
         isStarted = false
         MacaroonDebugLogger.logApp("native_session.stop")
     }
 
     func connectAutomatically(persistedState: PersistedSessionState) async throws {
+        await configureRegistryFailureHandlerIfNeeded()
         self.persistedState = persistedState
+        lastConnectIntent = .automatic
+        reconnectTask?.cancel()
+        reconnectTask = nil
 
-        guard let pairedCoreID = persistedState.pairedCoreID,
-              let endpoint = persistedState.endpoints[pairedCoreID]
-        else {
-            eventHandler?(.connectionChanged(ConnectionChangedEvent(
-                status: .error(message: "Automatic discovery fallback is not implemented yet.")
-            )))
+        let candidates = await automaticConnectionCandidates(persistedState: persistedState)
+        MacaroonLog.connection.info("Automatic connect candidates=\(candidates.count, privacy: .public)")
+        guard candidates.isEmpty == false else {
+            eventHandler?(.connectionChanged(ConnectionChangedEvent(status: .error(
+                message: "No reachable Roon Core was discovered. Check that your Core is running, or enter its host and port manually."
+            ))))
             return
         }
 
-        eventHandler?(.connectionChanged(ConnectionChangedEvent(
-            status: .connecting(mode: "saved server")
-        )))
+        var lastError: Error?
+        for candidate in candidates {
+            eventHandler?(.connectionChanged(ConnectionChangedEvent(
+                status: .connecting(mode: candidate.mode)
+            )))
 
-        do {
-            let result = try await registryClient.connectSavedEndpoint(endpoint: endpoint, persistedState: persistedState)
-            self.persistedState = result.persistedState
-            currentCore = result.core
-            MacaroonDebugLogger.logApp(
-                "session.connected",
-                details: [
-                    "mode": "saved server",
-                    "core_id": result.core.coreID,
-                    "display_name": result.core.displayName
-                ]
-            )
-            eventHandler?(.persistRequested(PersistRequestedEvent(persistedState: result.persistedState)))
-            eventHandler?(.connectionChanged(ConnectionChangedEvent(status: .connected(result.core))))
-        } catch let error as NativeRegistryError {
-            MacaroonDebugLogger.logError("session.auto_connect_failed", error: error)
-            try await handleRegistryError(error)
+            do {
+                let result: NativeRegistryConnectionResult
+                switch candidate.source {
+                case let .saved(endpoint):
+                    result = try await registryClient.connectSavedEndpoint(
+                        endpoint: endpoint,
+                        persistedState: persistedState
+                    )
+                case let .discovered(discovery):
+                    result = try await registryClient.connectDiscovered(
+                        discovery: discovery,
+                        persistedState: persistedState
+                    )
+                }
+
+                self.persistedState = result.persistedState
+                currentCore = result.core
+                MacaroonDebugLogger.logApp(
+                    "session.connected",
+                    details: [
+                        "mode": candidate.mode,
+                        "core_id": result.core.coreID,
+                        "display_name": result.core.displayName
+                    ]
+                )
+                MacaroonLog.connection.info("Connected mode=\(candidate.mode, privacy: .public) core=\(result.core.displayName, privacy: .public)")
+                eventHandler?(.persistRequested(PersistRequestedEvent(persistedState: result.persistedState)))
+                eventHandler?(.connectionChanged(ConnectionChangedEvent(status: .connected(result.core))))
+                return
+            } catch let error as NativeRegistryError {
+                MacaroonDebugLogger.logError(
+                    "session.auto_connect_candidate_failed",
+                    details: ["mode": candidate.mode],
+                    error: error
+                )
+                if case .authorizationRequired = error {
+                    try await handleRegistryError(error)
+                    return
+                }
+                lastError = error
+            } catch {
+                MacaroonDebugLogger.logError(
+                    "session.auto_connect_candidate_failed",
+                    details: ["mode": candidate.mode],
+                    error: error
+                )
+                lastError = error
+            }
+        }
+
+        if let lastError {
+            MacaroonDebugLogger.logError("session.auto_connect_failed", error: lastError)
+            eventHandler?(.connectionChanged(ConnectionChangedEvent(status: .error(message: lastError.localizedDescription))))
+            throw lastError
         }
     }
 
     func connectManually(host: String, port: Int, persistedState: PersistedSessionState) async throws {
+        await configureRegistryFailureHandlerIfNeeded()
         self.persistedState = persistedState
+        lastConnectIntent = .manual(host: host, port: port)
+        reconnectTask?.cancel()
+        reconnectTask = nil
         let core = CoreSummary(
             coreID: "",
             displayName: "\(host):\(port)",
@@ -134,6 +192,7 @@ final class NativeRoonSessionController: RoonSessionController {
                     "display_name": result.core.displayName
                 ]
             )
+            MacaroonLog.connection.info("Connected mode=manual core=\(result.core.displayName, privacy: .public)")
             eventHandler?(.persistRequested(PersistRequestedEvent(persistedState: result.persistedState)))
             eventHandler?(.connectionChanged(ConnectionChangedEvent(status: .connected(result.core))))
         } catch let error as NativeRegistryError {
@@ -148,6 +207,9 @@ final class NativeRoonSessionController: RoonSessionController {
     }
 
     func disconnect() async {
+        lastConnectIntent = nil
+        reconnectTask?.cancel()
+        reconnectTask = nil
         await registryClient.disconnect()
         currentCore = nil
         liveZonesByID = [:]
@@ -501,6 +563,130 @@ final class NativeRoonSessionController: RoonSessionController {
                 status: .error(message: error.localizedDescription)
             )))
             throw error
+        }
+    }
+
+    private func configureRegistryFailureHandlerIfNeeded() async {
+        guard hasConfiguredRegistryFailureHandler == false else {
+            return
+        }
+        hasConfiguredRegistryFailureHandler = true
+        await registryClient.setReceiveFailureHandler { [weak self] error in
+            Task { @MainActor [weak self] in
+                self?.handleTransportFailure(error)
+            }
+        }
+    }
+
+    private struct AutomaticConnectionCandidate {
+        enum Source {
+            case saved(CoreEndpoint)
+            case discovered(SoodDiscoveryMessage)
+        }
+
+        var mode: String
+        var source: Source
+    }
+
+    private func automaticConnectionCandidates(
+        persistedState: PersistedSessionState
+    ) async -> [AutomaticConnectionCandidate] {
+        var candidates: [AutomaticConnectionCandidate] = []
+        var seen = Set<String>()
+
+        if let pairedCoreID = persistedState.pairedCoreID,
+           let endpoint = persistedState.endpoints[pairedCoreID] {
+            candidates.append(AutomaticConnectionCandidate(
+                mode: "saved server",
+                source: .saved(endpoint)
+            ))
+            seen.insert("\(endpoint.host):\(endpoint.port)")
+        }
+
+        let discovered = await discoveryClient.discover(timeout: 0.9)
+        let ranked = discovered.sorted { lhs, rhs in
+            let lhsPaired = lhs.uniqueID == persistedState.pairedCoreID
+            let rhsPaired = rhs.uniqueID == persistedState.pairedCoreID
+            if lhsPaired != rhsPaired {
+                return lhsPaired && !rhsPaired
+            }
+            let lhsToken = persistedState.tokens[lhs.uniqueID] != nil
+            let rhsToken = persistedState.tokens[rhs.uniqueID] != nil
+            if lhsToken != rhsToken {
+                return lhsToken && !rhsToken
+            }
+            return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
+        }
+
+        for discovery in ranked {
+            let identity = "\(discovery.host):\(discovery.port)"
+            guard seen.contains(identity) == false else {
+                continue
+            }
+            seen.insert(identity)
+            candidates.append(AutomaticConnectionCandidate(
+                mode: discovery.uniqueID == persistedState.pairedCoreID ? "paired discovery" : "discovery",
+                source: .discovered(discovery)
+            ))
+        }
+
+        return candidates
+    }
+
+    private func handleTransportFailure(_ error: Error) {
+        guard currentCore != nil else {
+            return
+        }
+
+        MacaroonDebugLogger.logError("session.transport_failed", error: error)
+        MacaroonLog.transport.error("Transport failed: \(error.localizedDescription, privacy: .public)")
+        currentCore = nil
+        liveZonesByID = [:]
+        liveQueueState = nil
+        queueSubscriptionGeneration += 1
+        eventHandler?(.connectionChanged(ConnectionChangedEvent(
+            status: .error(message: "The connection to Roon was lost. Reconnecting…")
+        )))
+        scheduleReconnect()
+    }
+
+    private func scheduleReconnect() {
+        guard let lastConnectIntent else {
+            return
+        }
+
+        reconnectTask?.cancel()
+        reconnectTask = Task { @MainActor [weak self] in
+            var delaySeconds = 1.0
+            for attempt in 1...4 {
+                try? await Task.sleep(nanoseconds: UInt64(delaySeconds * 1_000_000_000))
+                guard let self, Task.isCancelled == false else {
+                    return
+                }
+
+                self.eventHandler?(.connectionChanged(ConnectionChangedEvent(
+                    status: .connecting(mode: "reconnect \(attempt)")
+                )))
+
+                do {
+                    self.reconnectTask = nil
+                    switch lastConnectIntent {
+                    case .automatic:
+                        try await self.connectAutomatically(persistedState: self.persistedState)
+                    case let .manual(host, port):
+                        try await self.connectManually(host: host, port: port, persistedState: self.persistedState)
+                    }
+                    return
+                } catch {
+                    MacaroonDebugLogger.logError(
+                        "session.reconnect_failed",
+                        details: ["attempt": String(attempt)],
+                        error: error
+                    )
+                }
+
+                delaySeconds = min(delaySeconds * 2, 8)
+            }
         }
     }
 

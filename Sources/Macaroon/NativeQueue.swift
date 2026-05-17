@@ -135,34 +135,40 @@ actor NativeQueueClient {
                 return item
             }
 
-            var byID = Dictionary(uniqueKeysWithValues: items.map { ($0.queueItemID, $0) })
-
             for changed in message.items_changed ?? [] {
                 let summary = toQueueItemSummary(
                     changed,
                     inferredCurrentQueueItemID: inferredCurrentQueueItemID,
-                    fallbackIndex: byID.count
+                    fallbackIndex: items.count
                 )
-                byID[summary.queueItemID] = summary
+                if let index = items.firstIndex(where: { $0.queueItemID == summary.queueItemID }) {
+                    items[index] = summary
+                } else {
+                    items.append(summary)
+                }
             }
 
             for added in message.items_added ?? [] {
                 let summary = toQueueItemSummary(
                     added,
                     inferredCurrentQueueItemID: inferredCurrentQueueItemID,
-                    fallbackIndex: byID.count
+                    fallbackIndex: items.count
                 )
-                byID[summary.queueItemID] = summary
+                if let index = items.firstIndex(where: { $0.queueItemID == summary.queueItemID }) {
+                    items[index] = summary
+                } else {
+                    items.append(summary)
+                }
             }
 
             for removed in message.items_removed ?? [] {
                 guard let removedID = removed.resolvedQueueItemID else {
                     continue
                 }
-                byID.removeValue(forKey: removedID)
+                items.removeAll { $0.queueItemID == removedID }
             }
 
-            items = Array(byID.values).map { item in
+            items = items.map { item in
                 var item = item
                 item.isCurrent = inferredCurrentQueueItemID != nil && item.queueItemID == inferredCurrentQueueItemID
                 return item
@@ -216,13 +222,15 @@ actor NativeQueueClient {
             items.first(where: { $0.isCurrent })?.queueItemID ??
             inferredCurrentQueueItemID
 
-        return QueueState(
+        let queueState = QueueState(
             zoneID: message.zone_id ?? zoneOrOutputID,
             title: message.title ?? message.display_name ?? previousState?.title ?? "Queue",
             totalCount: message.count ?? message.total_count ?? message.queue_count ?? items.count,
             currentQueueItemID: currentQueueItemID,
             items: items
         )
+        MacaroonLog.queue.debug("Applied queue update zone=\(queueState.zoneID, privacy: .public) items=\(queueState.items.count, privacy: .public)")
+        return queueState
     }
 
     private func toQueueItemSummary(

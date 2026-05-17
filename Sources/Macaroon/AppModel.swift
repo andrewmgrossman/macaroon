@@ -103,6 +103,10 @@ final class AppModel {
     @ObservationIgnored
     private var sessionController: RoonSessionController?
     @ObservationIgnored
+    private var sessionEventTask: Task<Void, Never>?
+    @ObservationIgnored
+    private var sessionEventContinuation: AsyncStream<RoonSessionEvent>.Continuation?
+    @ObservationIgnored
     private var sessionStore = SessionStateStore()
     @ObservationIgnored
     private let artworkSettingsStore: ArtworkCacheSettingsStore
@@ -204,10 +208,19 @@ final class AppModel {
                 "debug_log_directory": DebugLoggingConfiguration.isCompiled ? MacaroonDebugLogger.sessionDirectoryPath : "<disabled>"
             ]
         )
+        MacaroonLog.app.info("Starting native session")
 
         let controller = sessionControllerFactory()
+        let eventStream = AsyncStream(RoonSessionEvent.self, bufferingPolicy: .bufferingNewest(256)) { continuation in
+            sessionEventContinuation = continuation
+        }
         controller.eventHandler = { [weak self] event in
-            self?.handleSessionEvent(event)
+            self?.sessionEventContinuation?.yield(event)
+        }
+        sessionEventTask = Task { @MainActor [weak self] in
+            for await event in eventStream {
+                self?.handleSessionEvent(event)
+            }
         }
 
         sessionController = controller
@@ -238,6 +251,10 @@ final class AppModel {
             await sessionController.stop()
         }
         self.sessionController = nil
+        sessionEventContinuation?.finish()
+        sessionEventContinuation = nil
+        sessionEventTask?.cancel()
+        sessionEventTask = nil
         connectionMonitorTask?.cancel()
         connectionMonitorTask = nil
     }
@@ -245,6 +262,9 @@ final class AppModel {
     func prepareForTermination() {
         connectionMonitorTask?.cancel()
         connectionMonitorTask = nil
+        Task {
+            try? await artworkCacheStore.flush()
+        }
 
         guard let sessionController else {
             return
@@ -255,6 +275,10 @@ final class AppModel {
         }
 
         self.sessionController = nil
+        sessionEventContinuation?.finish()
+        sessionEventContinuation = nil
+        sessionEventTask?.cancel()
+        sessionEventTask = nil
     }
 
     func connectAutomatically() {
@@ -263,6 +287,7 @@ final class AppModel {
         connectionStatus = .connecting(mode: "discovery")
         autoConnectionIssue = nil
         MacaroonDebugLogger.logApp("app.connect_automatic")
+        MacaroonLog.connection.info("Automatic connect requested")
 
         Task {
             do {
@@ -287,6 +312,7 @@ final class AppModel {
                 "port": String(manualConnect.port)
             ]
         )
+        MacaroonLog.connection.info("Manual connect requested host=\(self.manualConnect.host, privacy: .public) port=\(self.manualConnect.port, privacy: .public)")
 
         Task {
             do {
@@ -535,6 +561,7 @@ final class AppModel {
                 "count": String(count)
             ]
         )
+        MacaroonLog.browse.debug("Loading browse page hierarchy=\(self.selectedHierarchy.rawValue, privacy: .public) offset=\(offset, privacy: .public) count=\(count, privacy: .public)")
         Task {
             do {
                 try await sessionController?.browseLoadPage(

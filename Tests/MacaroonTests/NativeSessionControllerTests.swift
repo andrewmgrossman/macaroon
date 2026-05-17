@@ -99,6 +99,46 @@ struct NativeSessionControllerTests {
 
     @Test
     @MainActor
+    func automaticConnectUsesDiscoveredCoreWhenNoSavedEndpointExists() async throws {
+        let discoveryClient = FakeDiscoveryClient(messages: [
+            SoodDiscoveryMessage(
+                uniqueID: "core-1",
+                displayName: "m1mini",
+                host: "10.0.7.148",
+                port: 9330
+            )
+        ])
+        let transport = MockNativeMooTransport(messages: [
+            try registryInfoMessage(requestID: "0"),
+            try registryRegisteredMessage(requestID: "1")
+        ])
+        let registryClient = NativeRegistryClient(transportFactory: { transport })
+        let controller = NativeRoonSessionController(
+            discoveryClient: discoveryClient,
+            registryClient: registryClient
+        )
+
+        var events: [RoonSessionEvent] = []
+        controller.eventHandler = { event in
+            events.append(event)
+        }
+
+        try await controller.start()
+        try await controller.connectAutomatically(persistedState: .empty)
+
+        #expect(await transport.connectedEndpoint == RoonCoreEndpoint(host: "10.0.7.148", port: 9330))
+        #expect(events.contains(.connectionChanged(ConnectionChangedEvent(status: .connecting(mode: "discovery")))))
+        #expect(events.contains(.connectionChanged(ConnectionChangedEvent(status: .connected(CoreSummary(
+            coreID: "core-1",
+            displayName: "m1mini",
+            displayVersion: "2.62",
+            host: "10.0.7.148",
+            port: 9330
+        ))))))
+    }
+
+    @Test
+    @MainActor
     func queueSubscribeIgnoresStaleCallbacksAndEmitsCurrentZoneEvents() async throws {
         let transport = MockNativeMooTransport(messages: [
             try registryInfoMessage(requestID: "0"),
@@ -402,4 +442,19 @@ private struct QueueSubscribeBody: Decodable {
     var zone_or_output_id: String
     var max_item_count: Int
     var subscription_key: Int
+}
+
+private actor FakeDiscoveryClient: RoonDiscoveryClientProtocol {
+    private let messages: [SoodDiscoveryMessage]
+
+    init(messages: [SoodDiscoveryMessage]) {
+        self.messages = messages
+    }
+
+    func start() async {}
+    func stop() async {}
+
+    func discover(timeout: TimeInterval) async -> [SoodDiscoveryMessage] {
+        messages
+    }
 }

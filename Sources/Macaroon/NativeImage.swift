@@ -24,6 +24,7 @@ typealias NativeImageFetchClosure = @Sendable (URL) async throws -> NativeImageF
 actor NativeImageClient {
     private let fetch: NativeImageFetchClosure
     private let cacheStore: ArtworkCacheStore
+    private var inFlightFetches: [String: Task<ImageFetchedResult, Error>] = [:]
 
     init(
         fetch: NativeImageFetchClosure? = nil,
@@ -52,16 +53,52 @@ actor NativeImageClient {
         format: String,
         core: CoreSummary
     ) async throws -> ImageFetchedResult {
-        guard let host = core.host, let port = core.port else {
-            throw NativeImageError.missingCoreEndpoint
-        }
-
         let variant = ArtworkCacheVariant(
             imageKey: imageKey,
             width: width,
             height: height,
             format: format
         )
+        let cacheKey = variant.cacheKey
+
+        if let inFlight = inFlightFetches[cacheKey] {
+            MacaroonLog.artwork.debug("Joining in-flight artwork fetch key=\(cacheKey, privacy: .public)")
+            return try await inFlight.value
+        }
+
+        let task = Task {
+            try await fetchImageUncoalesced(
+                imageKey: imageKey,
+                width: width,
+                height: height,
+                format: format,
+                core: core,
+                variant: variant
+            )
+        }
+        inFlightFetches[cacheKey] = task
+
+        do {
+            let result = try await task.value
+            inFlightFetches.removeValue(forKey: cacheKey)
+            return result
+        } catch {
+            inFlightFetches.removeValue(forKey: cacheKey)
+            throw error
+        }
+    }
+
+    private func fetchImageUncoalesced(
+        imageKey: String,
+        width: Int,
+        height: Int,
+        format: String,
+        core: CoreSummary,
+        variant: ArtworkCacheVariant
+    ) async throws -> ImageFetchedResult {
+        guard let host = core.host, let port = core.port else {
+            throw NativeImageError.missingCoreEndpoint
+        }
 
         if let cachedURL = try await cacheStore.cachedFileURL(for: variant) {
             MacaroonDebugLogger.logProtocol(
@@ -73,6 +110,7 @@ actor NativeImageClient {
                     "format": format
                 ]
             )
+            MacaroonLog.artwork.debug("Artwork cache hit image=\(imageKey, privacy: .public) size=\(width, privacy: .public)x\(height, privacy: .public)")
             return ImageFetchedResult(imageKey: imageKey, localURL: cachedURL.path)
         }
 
@@ -94,6 +132,7 @@ actor NativeImageClient {
                 "url": url.absoluteString
             ]
         )
+        MacaroonLog.artwork.debug("Fetching artwork image=\(imageKey, privacy: .public) size=\(width, privacy: .public)x\(height, privacy: .public)")
         let response = try await fetch(url)
         MacaroonDebugLogger.logProtocol(
             "image.response",
