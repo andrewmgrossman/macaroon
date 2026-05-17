@@ -300,21 +300,21 @@ final class NativeRoonSessionController: RoonSessionController {
         )
     }
 
-    func browseHome(hierarchy: BrowseHierarchy, zoneOrOutputID: String?) async throws {
+    func browseHome(hierarchy: BrowseHierarchy, zoneOrOutputID: String?) async throws -> BrowsePageSnapshot? {
         guard let session = await registryClient.activeSession() else {
-            return
+            return nil
         }
         let result = try await browseClient.home(
             session: session,
             hierarchy: hierarchy,
             zoneOrOutputID: zoneOrOutputID
         )
-        eventHandler?(.browseListChanged(BrowseListChangedEvent(page: result.page)))
+        return BrowsePageSnapshot(page: result.page)
     }
 
-    func browseOpen(hierarchy: BrowseHierarchy, zoneOrOutputID: String?, itemKey: String?) async throws {
+    func browseOpen(hierarchy: BrowseHierarchy, zoneOrOutputID: String?, itemKey: String?) async throws -> BrowsePageSnapshot? {
         guard let session = await registryClient.activeSession() else {
-            return
+            return nil
         }
         let result = try await browseClient.open(
             session: session,
@@ -322,24 +322,24 @@ final class NativeRoonSessionController: RoonSessionController {
             zoneOrOutputID: zoneOrOutputID,
             itemKey: itemKey
         )
-        eventHandler?(.browseListChanged(BrowseListChangedEvent(page: result.page)))
+        return BrowsePageSnapshot(page: result.page)
     }
 
-    func browseOpenService(title: String, zoneOrOutputID: String?) async throws {
+    func browseOpenService(title: String, zoneOrOutputID: String?) async throws -> BrowsePageSnapshot? {
         guard let session = await registryClient.activeSession() else {
-            return
+            return nil
         }
         let result = try await browseClient.openService(
             session: session,
             title: title,
             zoneOrOutputID: zoneOrOutputID
         )
-        eventHandler?(.browseListChanged(BrowseListChangedEvent(page: result.page)))
+        return BrowsePageSnapshot(page: result.page)
     }
 
-    func browseBack(hierarchy: BrowseHierarchy, levels: Int, zoneOrOutputID: String?) async throws {
+    func browseBack(hierarchy: BrowseHierarchy, levels: Int, zoneOrOutputID: String?) async throws -> BrowsePageSnapshot? {
         guard let session = await registryClient.activeSession() else {
-            return
+            return nil
         }
         let result = try await browseClient.back(
             session: session,
@@ -347,24 +347,24 @@ final class NativeRoonSessionController: RoonSessionController {
             zoneOrOutputID: zoneOrOutputID,
             levels: levels
         )
-        eventHandler?(.browseListChanged(BrowseListChangedEvent(page: result.page)))
+        return BrowsePageSnapshot(page: result.page)
     }
 
-    func browseRefresh(hierarchy: BrowseHierarchy, zoneOrOutputID: String?) async throws {
+    func browseRefresh(hierarchy: BrowseHierarchy, zoneOrOutputID: String?) async throws -> BrowsePageSnapshot? {
         guard let session = await registryClient.activeSession() else {
-            return
+            return nil
         }
         let result = try await browseClient.refresh(
             session: session,
             hierarchy: hierarchy,
             zoneOrOutputID: zoneOrOutputID
         )
-        eventHandler?(.browseListChanged(BrowseListChangedEvent(page: result.page)))
+        return BrowsePageSnapshot(page: result.page)
     }
 
-    func browseLoadPage(hierarchy: BrowseHierarchy, offset: Int, count: Int) async throws {
+    func browseLoadPage(hierarchy: BrowseHierarchy, offset: Int, count: Int) async throws -> BrowsePageSnapshot? {
         guard let session = await registryClient.activeSession() else {
-            return
+            return nil
         }
         let result = try await browseClient.loadPage(
             session: session,
@@ -372,7 +372,7 @@ final class NativeRoonSessionController: RoonSessionController {
             offset: offset,
             count: count
         )
-        eventHandler?(.browseListChanged(BrowseListChangedEvent(page: result.page)))
+        return BrowsePageSnapshot(page: result.page)
     }
 
     func browseSubmitInput(hierarchy: BrowseHierarchy, itemKey: String, input: String, zoneOrOutputID: String?) async throws {
@@ -403,9 +403,9 @@ final class NativeRoonSessionController: RoonSessionController {
         }
     }
 
-    func browseOpenSearchMatch(query: String, categoryTitle: String, matchTitle: String, zoneOrOutputID: String?) async throws {
+    func browseOpenSearchMatch(query: String, categoryTitle: String, matchTitle: String, zoneOrOutputID: String?) async throws -> BrowsePageSnapshot? {
         guard let session = await registryClient.activeSession() else {
-            return
+            return nil
         }
         let result = try await browseClient.openSearchMatch(
             session: session,
@@ -414,7 +414,7 @@ final class NativeRoonSessionController: RoonSessionController {
             matchTitle: matchTitle,
             zoneOrOutputID: zoneOrOutputID
         )
-        eventHandler?(.browseListChanged(BrowseListChangedEvent(page: result.page)))
+        return BrowsePageSnapshot(page: result.page)
     }
 
     func browseServices() async throws -> BrowseServicesResult {

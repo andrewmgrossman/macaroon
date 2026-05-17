@@ -73,6 +73,54 @@ struct AppModelTests {
     }
 
     @Test
+    func staleBrowseNavigationResultDoesNotOverwriteCurrentPage() async throws {
+        let controller = RecordingSessionController()
+        controller.browseHomeDelays[.artists] = 180
+        controller.browseHomeResults[.artists] = BrowsePageSnapshot(page: BrowsePage(
+            hierarchy: .artists,
+            list: BrowseList(
+                title: "Artists",
+                subtitle: nil,
+                count: 1,
+                level: 0,
+                displayOffset: 0
+            ),
+            items: [
+                BrowseItem(title: "Late Artist", subtitle: nil, imageKey: nil, itemKey: "late-artist", hint: "list", inputPrompt: nil)
+            ],
+            offset: 0,
+            selectedZoneID: nil
+        ))
+        controller.browseHomeResults[.albums] = BrowsePageSnapshot(page: BrowsePage(
+            hierarchy: .albums,
+            list: BrowseList(
+                title: "Albums",
+                subtitle: nil,
+                count: 1,
+                level: 0,
+                displayOffset: 0
+            ),
+            items: [
+                BrowseItem(title: "Current Album", subtitle: nil, imageKey: nil, itemKey: "current-album", hint: "list", inputPrompt: nil)
+            ],
+            offset: 0,
+            selectedZoneID: nil
+        ))
+        let model = AppModel(sessionControllerFactory: { controller })
+        model.start()
+        await Task.yield()
+
+        model.openHierarchy(.artists)
+        try await Task.sleep(for: .milliseconds(20))
+        model.openHierarchy(.albums)
+        try await Task.sleep(for: .milliseconds(260))
+
+        #expect(model.selectedHierarchy == .albums)
+        #expect(model.browsePage?.hierarchy == .albums)
+        #expect(model.browsePage?.items.map(\.title) == ["Current Album"])
+    }
+
+    @Test
     func loadArtworkUsesMemoryCacheOnRepeatAccess() async throws {
         let defaults = UserDefaults(suiteName: "macaroon-appmodel-artwork-\(UUID().uuidString)")!
         let settingsStore = ArtworkCacheSettingsStore(defaults: defaults)
@@ -832,6 +880,8 @@ private final class RecordingSessionController: RoonSessionController {
     var browseOpenServiceCalls: [BrowseOpenServiceCall] = []
     var subscribeQueueCalls: [SubscribeQueueCall] = []
     var browseLoadPageCalls: [BrowseLoadPageCall] = []
+    var browseHomeResults: [BrowseHierarchy: BrowsePageSnapshot] = [:]
+    var browseHomeDelays: [BrowseHierarchy: Int] = [:]
     var contextActionsError: Error?
     var performSearchMatchActionError: Error?
     private let imageFetcher: ImageFetcher?
@@ -854,22 +904,35 @@ private final class RecordingSessionController: RoonSessionController {
         subscribeQueueCalls.append(.init(zoneOrOutputID: zoneOrOutputID, maxItemCount: maxItemCount))
     }
     func queuePlayFromHere(zoneOrOutputID: String, queueItemID: String) async throws {}
-    func browseHome(hierarchy: BrowseHierarchy, zoneOrOutputID: String?) async throws {
+    func browseHome(hierarchy: BrowseHierarchy, zoneOrOutputID: String?) async throws -> BrowsePageSnapshot? {
         browseHomeCalls.append(.init(hierarchy: hierarchy, zoneOrOutputID: zoneOrOutputID))
+        if let delay = browseHomeDelays[hierarchy] {
+            try await Task.sleep(for: .milliseconds(delay))
+        }
+        return browseHomeResults[hierarchy]
     }
-    func browseOpen(hierarchy: BrowseHierarchy, zoneOrOutputID: String?, itemKey: String?) async throws {}
-    func browseOpenService(title: String, zoneOrOutputID: String?) async throws {
+    func browseOpen(hierarchy: BrowseHierarchy, zoneOrOutputID: String?, itemKey: String?) async throws -> BrowsePageSnapshot? {
+        return nil
+    }
+    func browseOpenService(title: String, zoneOrOutputID: String?) async throws -> BrowsePageSnapshot? {
         browseOpenServiceCalls.append(.init(title: title, zoneOrOutputID: zoneOrOutputID))
+        return nil
     }
-    func browseBack(hierarchy: BrowseHierarchy, levels: Int, zoneOrOutputID: String?) async throws {}
-    func browseRefresh(hierarchy: BrowseHierarchy, zoneOrOutputID: String?) async throws {
+    func browseBack(hierarchy: BrowseHierarchy, levels: Int, zoneOrOutputID: String?) async throws -> BrowsePageSnapshot? {
+        return nil
+    }
+    func browseRefresh(hierarchy: BrowseHierarchy, zoneOrOutputID: String?) async throws -> BrowsePageSnapshot? {
         browseRefreshCalls.append(.init(hierarchy: hierarchy, zoneOrOutputID: zoneOrOutputID))
+        return nil
     }
-    func browseLoadPage(hierarchy: BrowseHierarchy, offset: Int, count: Int) async throws {
+    func browseLoadPage(hierarchy: BrowseHierarchy, offset: Int, count: Int) async throws -> BrowsePageSnapshot? {
         browseLoadPageCalls.append(.init(hierarchy: hierarchy, offset: offset, count: count))
+        return nil
     }
     func browseSubmitInput(hierarchy: BrowseHierarchy, itemKey: String, input: String, zoneOrOutputID: String?) async throws {}
-    func browseOpenSearchMatch(query: String, categoryTitle: String, matchTitle: String, zoneOrOutputID: String?) async throws {}
+    func browseOpenSearchMatch(query: String, categoryTitle: String, matchTitle: String, zoneOrOutputID: String?) async throws -> BrowsePageSnapshot? {
+        return nil
+    }
     func browseServices() async throws -> BrowseServicesResult { BrowseServicesResult(services: []) }
     func browseSearchSections(query: String, zoneOrOutputID: String?) async throws -> SearchResultsPage {
         SearchResultsPage(query: query, topHit: nil, sections: [])

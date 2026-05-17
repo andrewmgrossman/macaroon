@@ -24,6 +24,11 @@ final class AppModel {
         var length: Double?
     }
 
+    private struct BrowseRequestID: Equatable, Sendable {
+        var rawValue: Int
+        var navigationGeneration: Int
+    }
+
     var connectionStatus: ConnectionStatus = .disconnected {
         didSet {
             MacaroonDebugLogger.logApp(
@@ -147,6 +152,10 @@ final class AppModel {
     @ObservationIgnored
     private let sessionControllerFactory: @MainActor () -> RoonSessionController
     @ObservationIgnored
+    private var browseRequestSequence = 0
+    @ObservationIgnored
+    private var browseNavigationGeneration = 0
+    @ObservationIgnored
     private var navigationTrail: [BrowseNavigationAction] = []
     @ObservationIgnored
     private var forwardNavigationTrail: [BrowseNavigationAction] = []
@@ -249,6 +258,7 @@ final class AppModel {
             return
         }
 
+        invalidateBrowseRequests()
         Task {
             await sessionController.stop()
         }
@@ -264,6 +274,7 @@ final class AppModel {
     func prepareForTermination() {
         connectionMonitorTask?.cancel()
         connectionMonitorTask = nil
+        invalidateBrowseRequests()
         Task {
             try? await artworkCacheStore.flush()
         }
@@ -344,6 +355,7 @@ final class AppModel {
 
     func disconnect() {
         userInitiatedDisconnect = true
+        invalidateBrowseRequests()
         MacaroonDebugLogger.logApp("app.disconnect")
         Task {
             await sessionController?.disconnect()
@@ -404,10 +416,15 @@ final class AppModel {
             "app.open_hierarchy",
             details: ["hierarchy": hierarchy.rawValue, "zone_id": selectedZoneID ?? "<nil>"]
         )
+        let requestID = beginBrowseNavigationRequest()
         Task {
             do {
-                try await sessionController?.browseHome(hierarchy: hierarchy, zoneOrOutputID: selectedZoneID)
+                let snapshot = try await sessionController?.browseHome(hierarchy: hierarchy, zoneOrOutputID: selectedZoneID)
+                applyBrowseSnapshot(snapshot, requestID: requestID)
             } catch {
+                guard isCurrentBrowseRequest(requestID) else {
+                    return
+                }
                 errorState = ErrorState(title: "Browse Failed", message: error.localizedDescription)
             }
         }
@@ -521,6 +538,7 @@ final class AppModel {
 
     func goBack() {
         MacaroonDebugLogger.logApp("app.go_back", details: ["hierarchy": selectedHierarchy.rawValue])
+        let requestID = beginBrowseNavigationRequest()
         Task {
             let movedAction = navigationTrail.popLast()
             if let movedAction {
@@ -533,12 +551,16 @@ final class AppModel {
             }
 
             do {
-                try await sessionController?.browseBack(
+                let snapshot = try await sessionController?.browseBack(
                     hierarchy: selectedHierarchy,
                     levels: 1,
                     zoneOrOutputID: selectedZoneID
                 )
+                applyBrowseSnapshot(snapshot, requestID: requestID)
             } catch {
+                guard isCurrentBrowseRequest(requestID) else {
+                    return
+                }
                 if let movedAction = forwardNavigationTrail.popLast() {
                     navigationTrail.append(movedAction)
                 }
@@ -556,10 +578,15 @@ final class AppModel {
 
     func refreshBrowse() {
         MacaroonDebugLogger.logApp("app.refresh_browse", details: ["hierarchy": selectedHierarchy.rawValue])
+        let requestID = beginBrowseNavigationRequest()
         Task {
             do {
-                try await sessionController?.browseRefresh(hierarchy: selectedHierarchy, zoneOrOutputID: selectedZoneID)
+                let snapshot = try await sessionController?.browseRefresh(hierarchy: selectedHierarchy, zoneOrOutputID: selectedZoneID)
+                applyBrowseSnapshot(snapshot, requestID: requestID)
             } catch {
+                guard isCurrentBrowseRequest(requestID) else {
+                    return
+                }
                 errorState = ErrorState(title: "Refresh Failed", message: error.localizedDescription)
             }
         }
@@ -576,15 +603,23 @@ final class AppModel {
             ]
         )
         MacaroonLog.browse.debug("Loading browse page hierarchy=\(self.selectedHierarchy.rawValue, privacy: .public) offset=\(offset, privacy: .public) count=\(count, privacy: .public)")
+        let requestID = beginBrowsePageRequest()
         Task {
             do {
-                try await sessionController?.browseLoadPage(
+                let snapshot = try await sessionController?.browseLoadPage(
                     hierarchy: selectedHierarchy,
                     offset: offset,
                     count: count
                 )
+                guard applyBrowseSnapshot(snapshot, requestID: requestID) else {
+                    activeBrowseLoadOffsets.remove(offset)
+                    return
+                }
             } catch {
                 activeBrowseLoadOffsets.remove(offset)
+                guard isCurrentBrowseRequest(requestID) else {
+                    return
+                }
                 errorState = ErrorState(title: "Page Load Failed", message: error.localizedDescription)
             }
         }
@@ -1157,6 +1192,7 @@ final class AppModel {
         case let .connectionChanged(payload):
             switch payload.status {
             case .disconnected:
+                invalidateBrowseRequests()
                 currentCore = nil
                 connectionStatus = .disconnected
                 queueState = nil
@@ -1183,6 +1219,7 @@ final class AppModel {
                 currentCore = core
                 connectionStatus = .authorizing(core)
             case let .error(message):
+                invalidateBrowseRequests()
                 connectionStatus = .error(message)
             }
         case let .authorizationRequired(payload):
@@ -1200,38 +1237,7 @@ final class AppModel {
         case let .queueChanged(payload):
             queueState = payload.queue
         case let .browseListChanged(payload):
-            if
-                selectedHierarchy == .search,
-                let pendingSearchQuery
-            {
-                if let libraryItem = searchLibraryPivotItem(in: payload.page) {
-                    openItem(libraryItem)
-                    return
-                }
-
-                if let promptItem = payload.page.items.first(where: { $0.inputPrompt != nil }) {
-                    self.pendingSearchQuery = nil
-                    submitPrompt(for: promptItem, value: pendingSearchQuery)
-                    return
-                }
-            }
-            if payload.page.hierarchy == .browse, payload.page.list.level == 0 {
-                selectedBrowseServiceTitle = nil
-            }
-            if supportsStructuredSearchResults, shouldShowSearchResultsPage(for: payload.page) {
-                let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-                searchRootBrowsePage = payload.page
-                searchResultsPage = SearchResultsPage(
-                    query: query,
-                    topHit: payload.page.items.first,
-                    sections: searchResultsPage?.query == query ? searchResultsPage?.sections ?? [] : []
-                )
-                loadSearchSections(for: query)
-            } else {
-                searchSectionsTask?.cancel()
-                searchResultsPage = nil
-            }
-            applyBrowsePage(payload.page)
+            handleBrowsePage(payload.page)
         case let .browseItemReplaced(payload):
             guard browsePage?.hierarchy == payload.hierarchy else {
                 return
@@ -1357,6 +1363,82 @@ final class AppModel {
         if let selectedZoneID {
             UserDefaults.standard.set(selectedZoneID, forKey: preferredZoneIDDefaultsKey)
         }
+    }
+
+    private func beginBrowseNavigationRequest() -> BrowseRequestID {
+        browseNavigationGeneration += 1
+        return beginBrowseRequest()
+    }
+
+    private func invalidateBrowseRequests() {
+        browseNavigationGeneration += 1
+        activeBrowseLoadOffsets.removeAll(keepingCapacity: true)
+    }
+
+    private func beginBrowsePageRequest() -> BrowseRequestID {
+        beginBrowseRequest()
+    }
+
+    private func beginBrowseRequest() -> BrowseRequestID {
+        browseRequestSequence += 1
+        return BrowseRequestID(
+            rawValue: browseRequestSequence,
+            navigationGeneration: browseNavigationGeneration
+        )
+    }
+
+    private func isCurrentBrowseRequest(_ requestID: BrowseRequestID) -> Bool {
+        requestID.navigationGeneration == browseNavigationGeneration
+    }
+
+    @discardableResult
+    private func applyBrowseSnapshot(_ snapshot: BrowsePageSnapshot?, requestID: BrowseRequestID) -> Bool {
+        guard let snapshot else {
+            return false
+        }
+        guard isCurrentBrowseRequest(requestID) else {
+            return false
+        }
+        handleBrowsePage(snapshot.page)
+        return true
+    }
+
+    private func handleBrowsePage(_ page: BrowsePage) {
+        if
+            selectedHierarchy == .search,
+            let pendingSearchQuery
+        {
+            if let libraryItem = searchLibraryPivotItem(in: page) {
+                openItem(libraryItem)
+                return
+            }
+
+            if let promptItem = page.items.first(where: { $0.inputPrompt != nil }) {
+                self.pendingSearchQuery = nil
+                submitPrompt(for: promptItem, value: pendingSearchQuery)
+                return
+            }
+        }
+
+        if page.hierarchy == .browse, page.list.level == 0 {
+            selectedBrowseServiceTitle = nil
+        }
+
+        if supportsStructuredSearchResults, shouldShowSearchResultsPage(for: page) {
+            let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+            searchRootBrowsePage = page
+            searchResultsPage = SearchResultsPage(
+                query: query,
+                topHit: page.items.first,
+                sections: searchResultsPage?.query == query ? searchResultsPage?.sections ?? [] : []
+            )
+            loadSearchSections(for: query)
+        } else {
+            searchSectionsTask?.cancel()
+            searchResultsPage = nil
+        }
+
+        applyBrowsePage(page)
     }
 
     private func applyBrowsePage(_ incoming: BrowsePage) {
@@ -1839,22 +1921,22 @@ final class AppModel {
         let offset = pageIndex * browsePageSize
 
         if loadedBrowseLoadOffsets.contains(offset) == false {
+            let requestID = beginBrowsePageRequest()
             activeBrowseLoadOffsets.insert(offset)
             do {
-                try await sessionController?.browseLoadPage(
+                let snapshot = try await sessionController?.browseLoadPage(
                     hierarchy: selectedHierarchy,
                     offset: offset,
                     count: browsePageSize
                 )
+                guard applyBrowseSnapshot(snapshot, requestID: requestID) else {
+                    activeBrowseLoadOffsets.remove(offset)
+                    return nil
+                }
             } catch {
                 activeBrowseLoadOffsets.remove(offset)
                 return nil
             }
-        }
-
-        let deadline = Date().addingTimeInterval(1.5)
-        while loadedBrowseLoadOffsets.contains(offset) == false, Date() < deadline {
-            try? await Task.sleep(for: .milliseconds(30))
         }
 
         return loadedItemsForPage(offset: offset)
@@ -1904,15 +1986,22 @@ final class AppModel {
                 ]
             )
 
+            let requestID = beginBrowseNavigationRequest()
             Task {
                 do {
-                    try await sessionController?.browseOpen(
+                    let snapshot = try await sessionController?.browseOpen(
                         hierarchy: hierarchy,
                         zoneOrOutputID: selectedZoneID,
                         itemKey: itemKey
                     )
+                    guard applyBrowseSnapshot(snapshot, requestID: requestID) else {
+                        return
+                    }
                     commitNavigation(action, historyMode: historyMode)
                 } catch {
+                    guard isCurrentBrowseRequest(requestID) else {
+                        return
+                    }
                     if await recoverFromStaleBrowseItemError(error) == false {
                         errorState = ErrorState(title: "Browse Item Failed", message: error.localizedDescription)
                     }
@@ -1927,11 +2016,18 @@ final class AppModel {
                 details: ["title": title, "zone_id": selectedZoneID ?? "<nil>"]
             )
 
+            let requestID = beginBrowseNavigationRequest()
             Task {
                 do {
-                    try await sessionController?.browseOpenService(title: title, zoneOrOutputID: selectedZoneID)
+                    let snapshot = try await sessionController?.browseOpenService(title: title, zoneOrOutputID: selectedZoneID)
+                    guard applyBrowseSnapshot(snapshot, requestID: requestID) else {
+                        return
+                    }
                     commitNavigation(action, historyMode: historyMode)
                 } catch {
+                    guard isCurrentBrowseRequest(requestID) else {
+                        return
+                    }
                     errorState = ErrorState(title: "Browse Failed", message: error.localizedDescription)
                 }
             }
@@ -1946,11 +2042,18 @@ final class AppModel {
                 details: ["query": query, "zone_id": selectedZoneID ?? "<nil>"]
             )
 
+            let requestID = beginBrowseNavigationRequest()
             Task {
                 do {
-                    try await sessionController?.browseHome(hierarchy: .search, zoneOrOutputID: selectedZoneID)
+                    let snapshot = try await sessionController?.browseHome(hierarchy: .search, zoneOrOutputID: selectedZoneID)
+                    guard applyBrowseSnapshot(snapshot, requestID: requestID) else {
+                        return
+                    }
                     commitNavigation(action, historyMode: historyMode)
                 } catch {
+                    guard isCurrentBrowseRequest(requestID) else {
+                        return
+                    }
                     errorState = ErrorState(title: "Search Failed", message: error.localizedDescription)
                 }
             }
@@ -1961,16 +2064,23 @@ final class AppModel {
             searchText = query
             searchResultsPage = nil
 
+            let requestID = beginBrowseNavigationRequest()
             Task {
                 do {
-                    try await sessionController?.browseOpenSearchMatch(
+                    let snapshot = try await sessionController?.browseOpenSearchMatch(
                         query: query,
                         categoryTitle: categoryTitle,
                         matchTitle: matchTitle,
                         zoneOrOutputID: selectedZoneID
                     )
+                    guard applyBrowseSnapshot(snapshot, requestID: requestID) else {
+                        return
+                    }
                     commitNavigation(action, historyMode: historyMode)
                 } catch {
+                    guard isCurrentBrowseRequest(requestID) else {
+                        return
+                    }
                     if await recoverFromStaleBrowseItemError(error) == false {
                         let title = categoryTitle == "Artists" ? "Artist Navigation Failed" : "Album Navigation Failed"
                         errorState = ErrorState(title: title, message: error.localizedDescription)
@@ -1994,19 +2104,22 @@ final class AppModel {
         )
 
         do {
+            let requestID = beginBrowseNavigationRequest()
             let trimmedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let snapshot: BrowsePageSnapshot?
             if selectedHierarchy == .search,
                trimmedSearch.isEmpty == false {
                 let query = trimmedSearch
                 pendingSearchQuery = query
                 searchResultsPage = nil
                 searchRootBrowsePage = nil
-                try await sessionController?.browseHome(hierarchy: .search, zoneOrOutputID: selectedZoneID)
+                snapshot = try await sessionController?.browseHome(hierarchy: .search, zoneOrOutputID: selectedZoneID)
             } else if let selectedBrowseServiceTitle, selectedHierarchy == .browse {
-                try await sessionController?.browseOpenService(title: selectedBrowseServiceTitle, zoneOrOutputID: selectedZoneID)
+                snapshot = try await sessionController?.browseOpenService(title: selectedBrowseServiceTitle, zoneOrOutputID: selectedZoneID)
             } else {
-                try await sessionController?.browseRefresh(hierarchy: selectedHierarchy, zoneOrOutputID: selectedZoneID)
+                snapshot = try await sessionController?.browseRefresh(hierarchy: selectedHierarchy, zoneOrOutputID: selectedZoneID)
             }
+            applyBrowseSnapshot(snapshot, requestID: requestID)
             return true
         } catch {
             MacaroonDebugLogger.logError("stale_browse_recovery.failed", error: error)

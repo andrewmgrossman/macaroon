@@ -15,14 +15,14 @@ protocol RoonSessionController: AnyObject {
     func subscribeQueue(zoneOrOutputID: String, maxItemCount: Int) async throws
     func queuePlayFromHere(zoneOrOutputID: String, queueItemID: String) async throws
 
-    func browseHome(hierarchy: BrowseHierarchy, zoneOrOutputID: String?) async throws
-    func browseOpen(hierarchy: BrowseHierarchy, zoneOrOutputID: String?, itemKey: String?) async throws
-    func browseOpenService(title: String, zoneOrOutputID: String?) async throws
-    func browseBack(hierarchy: BrowseHierarchy, levels: Int, zoneOrOutputID: String?) async throws
-    func browseRefresh(hierarchy: BrowseHierarchy, zoneOrOutputID: String?) async throws
-    func browseLoadPage(hierarchy: BrowseHierarchy, offset: Int, count: Int) async throws
+    func browseHome(hierarchy: BrowseHierarchy, zoneOrOutputID: String?) async throws -> BrowsePageSnapshot?
+    func browseOpen(hierarchy: BrowseHierarchy, zoneOrOutputID: String?, itemKey: String?) async throws -> BrowsePageSnapshot?
+    func browseOpenService(title: String, zoneOrOutputID: String?) async throws -> BrowsePageSnapshot?
+    func browseBack(hierarchy: BrowseHierarchy, levels: Int, zoneOrOutputID: String?) async throws -> BrowsePageSnapshot?
+    func browseRefresh(hierarchy: BrowseHierarchy, zoneOrOutputID: String?) async throws -> BrowsePageSnapshot?
+    func browseLoadPage(hierarchy: BrowseHierarchy, offset: Int, count: Int) async throws -> BrowsePageSnapshot?
     func browseSubmitInput(hierarchy: BrowseHierarchy, itemKey: String, input: String, zoneOrOutputID: String?) async throws
-    func browseOpenSearchMatch(query: String, categoryTitle: String, matchTitle: String, zoneOrOutputID: String?) async throws
+    func browseOpenSearchMatch(query: String, categoryTitle: String, matchTitle: String, zoneOrOutputID: String?) async throws -> BrowsePageSnapshot?
 
     func browseServices() async throws -> BrowseServicesResult
     func browseSearchSections(query: String, zoneOrOutputID: String?) async throws -> SearchResultsPage
@@ -49,6 +49,10 @@ protocol RoonSessionController: AnyObject {
     func transportMute(outputID: String, how: OutputMuteMode) async throws
 
     func fetchArtwork(imageKey: String, width: Int, height: Int, format: String) async throws -> ImageFetchedResult
+}
+
+struct BrowsePageSnapshot: Equatable, Sendable {
+    var page: BrowsePage
 }
 
 enum RoonSessionEvent: Equatable, Sendable {
