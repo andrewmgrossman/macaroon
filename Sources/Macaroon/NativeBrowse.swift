@@ -57,6 +57,7 @@ enum NativeBrowseError: LocalizedError, Equatable, Sendable {
 
 actor NativeBrowseClient {
     private var sessions: [BrowseHierarchy: NativeBrowseState] = [:]
+    private var searchSectionsSequence = 0
 
     func browseServices(session: NativeMooSession) async throws -> NativeBrowseServicesResult {
         let sessionKey = "macaroon-sidebar-services"
@@ -405,25 +406,16 @@ actor NativeBrowseClient {
         query: String,
         zoneOrOutputID: String?
     ) async throws -> SearchResultsPage {
-        let previousSearchState = sessions[.search]
-        defer { sessions[.search] = previousSearchState }
-
+        searchSectionsSequence += 1
         let context = NativeBrowseSessionContext(
             requestHierarchy: "browse",
-            multiSessionKey: "macaroon-search-results"
+            multiSessionKey: "macaroon-search-results-\(searchSectionsSequence)"
         )
         let resultsPage = try await prepareSearchResultsSession(
             session: session,
             query: query,
             zoneOrOutputID: zoneOrOutputID,
             context: context
-        )
-
-        sessions[.search] = NativeBrowseState(
-            list: resultsPage.list,
-            selectedZoneID: zoneOrOutputID,
-            requestHierarchy: context.requestHierarchy,
-            multiSessionKey: context.multiSessionKey
         )
 
         var sections: [SearchResultsSection] = []
@@ -449,13 +441,14 @@ actor NativeBrowseClient {
                 )
             )
 
+            let limit = initialSearchSectionLimit(for: kind)
             let categoryPage = try await loadCurrentSessionItems(
                 session: session,
                 hierarchy: context.requestHierarchy,
-                multiSessionKey: context.multiSessionKey
+                multiSessionKey: context.multiSessionKey,
+                count: limit
             )
 
-            let limit = kind == .tracks ? 30 : 24
             let items = (categoryPage.items ?? [])
                 .prefix(limit)
                 .map(toBrowseItem)
@@ -844,14 +837,15 @@ actor NativeBrowseClient {
     private func loadCurrentSessionItems(
         session: NativeMooSession,
         hierarchy: String,
-        multiSessionKey: String?
+        multiSessionKey: String?,
+        count: Int = 100
     ) async throws -> NativeBrowseLoadPayload {
         try await loadRequest(
             session: session,
             options: NativeBrowseLoadRequest(
                 hierarchy: hierarchy,
                 offset: 0,
-                count: 100,
+                count: count,
                 set_display_offset: 0,
                 multi_session_key: multiSessionKey
             )
@@ -1246,6 +1240,10 @@ actor NativeBrowseClient {
             return NativeBrowseSessionContext(requestHierarchy: "browse", multiSessionKey: "macaroon-search")
         }
         return NativeBrowseSessionContext(requestHierarchy: hierarchy.rawValue, multiSessionKey: nil)
+    }
+
+    private func initialSearchSectionLimit(for kind: SearchResultsSectionKind) -> Int {
+        kind == .tracks ? 30 : 24
     }
 
     private func currentSessionContext(for hierarchy: BrowseHierarchy) -> NativeBrowseSessionContext {

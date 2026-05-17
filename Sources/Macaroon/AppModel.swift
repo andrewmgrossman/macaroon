@@ -122,7 +122,7 @@ final class AppModel {
     @ObservationIgnored
     private let wikipediaClient: WikipediaClient
     @ObservationIgnored
-    private let artworkCache = NSCache<NSString, NSImage>()
+    private let artworkPipeline: ArtworkPipeline
     @ObservationIgnored
     private var hasAttemptedAutoConnect = false
     @ObservationIgnored
@@ -164,8 +164,6 @@ final class AppModel {
     @ObservationIgnored
     private var browseVisibleIndices: [String: Int] = [:]
     @ObservationIgnored
-    private var artworkPrefetchTasks: [String: Task<Void, Never>] = [:]
-    @ObservationIgnored
     private var typeSelectBuffer = ""
     @ObservationIgnored
     private var typeSelectResetTask: Task<Void, Never>?
@@ -192,6 +190,7 @@ final class AppModel {
         artworkCacheStore: ArtworkCacheStore = .shared,
         nativeImageClient: NativeImageClient? = nil,
         wikipediaClient: WikipediaClient? = nil,
+        artworkPipeline: ArtworkPipeline = ArtworkPipeline(),
         artworkSettingsStore: ArtworkCacheSettingsStore = ArtworkCacheSettingsStore(),
         sessionStore: SessionStateStore = SessionStateStore()
     ) {
@@ -201,6 +200,7 @@ final class AppModel {
         self.artworkCacheStore = artworkCacheStore
         self.nativeImageClient = nativeImageClient ?? NativeImageClient(cacheStore: artworkCacheStore)
         self.wikipediaClient = wikipediaClient ?? WikipediaClient()
+        self.artworkPipeline = artworkPipeline
         self.sessionStore = sessionStore
         self.artworkCacheLimitBytes = artworkSettings.maxBytes
         self.selectedZoneID = UserDefaults.standard.string(forKey: preferredZoneIDDefaultsKey)
@@ -1044,7 +1044,7 @@ final class AppModel {
     }
 
     func clearArtworkCache() async {
-        artworkCache.removeAllObjects()
+        await artworkPipeline.clearMemoryCache()
 
         do {
             try await artworkCacheStore.clear()
@@ -1055,41 +1055,35 @@ final class AppModel {
     }
 
     func loadArtwork(imageKey: String?, width: Int = 320, height: Int = 320) async -> NSImage? {
+        await loadArtwork(imageKey: imageKey, width: width, height: height, priority: .visible)
+    }
+
+    private func loadArtwork(
+        imageKey: String?,
+        width: Int,
+        height: Int,
+        priority: ArtworkPipelinePriority
+    ) async -> NSImage? {
         guard let imageKey, !imageKey.isEmpty else {
             return nil
         }
 
-        let variant = ArtworkCacheVariant(
+        let request = ArtworkPipelineRequest(
             imageKey: imageKey,
             width: width,
             height: height,
             format: "image/jpeg"
         )
-        let cacheKey = variant.cacheKey as NSString
 
-        if let cached = artworkCache.object(forKey: cacheKey) {
-            return cached
-        }
-
-        do {
-            guard let sessionController else {
-                return nil
-            }
-            let result = try await sessionController.fetchArtwork(
-                imageKey: imageKey,
-                width: width,
-                height: height,
-                format: "image/jpeg"
-            )
-            guard let image = NSImage(contentsOfFile: result.localURL) else {
-                return nil
-            }
-            artworkCache.setObject(image, forKey: cacheKey, cost: artworkMemoryCost(width: width, height: height))
+        let result = await artworkPipeline.load(
+            request: request,
+            priority: priority,
+            fetchArtwork: artworkFetchLoader()
+        )
+        if result != nil {
             await refreshArtworkCacheStats()
-            return image
-        } catch {
-            return nil
         }
+        return result?.image
     }
 
     func loadWikipedia(for target: WikipediaLookupTarget) {
@@ -1110,7 +1104,7 @@ final class AppModel {
         wikipediaStates[key] = .loading
 
         let client = wikipediaClient
-        wikipediaLoadTasks[key] = Task { @MainActor [weak self] in
+        wikipediaLoadTasks[key] = Task(priority: .background) { @MainActor [weak self] in
             do {
                 let article = try await client.lookupArticle(for: target)
                 guard let self else {
@@ -1163,7 +1157,7 @@ final class AppModel {
 
     private func refreshArtworkCacheStats() async {
         do {
-            let stats = try await artworkCacheStore.setSettings(ArtworkCacheSettings(maxBytes: artworkCacheLimitBytes))
+            let stats = try await artworkCacheStore.stats()
             artworkCacheUsageBytes = stats.totalBytes
         } catch {
             MacaroonDebugLogger.logError("artwork_cache.stats_failed", error: error)
@@ -1171,12 +1165,24 @@ final class AppModel {
     }
 
     private func configureArtworkMemoryCacheLimit() {
-        artworkCache.totalCostLimit = max(32 * 1024 * 1024, min(128 * 1024 * 1024, artworkCacheLimitBytes / 4))
-        artworkCache.countLimit = 512
+        let memoryLimit = max(32 * 1024 * 1024, min(128 * 1024 * 1024, artworkCacheLimitBytes / 4))
+        Task { [artworkPipeline] in
+            await artworkPipeline.setMemoryCacheLimit(bytes: memoryLimit)
+        }
     }
 
-    private func artworkMemoryCost(width: Int, height: Int) -> Int {
-        max(width * height * 4, 1)
+    private func artworkFetchLoader() -> ArtworkPipeline.FetchArtwork {
+        { [weak self] imageKey, width, height, format in
+            guard let self, let sessionController = self.sessionController else {
+                throw NativeImageError.missingCoreEndpoint
+            }
+            return try await sessionController.fetchArtwork(
+                imageKey: imageKey,
+                width: width,
+                height: height,
+                format: format
+            )
+        }
     }
 
     private func handleSessionEvent(_ event: RoonSessionEvent) {
@@ -1373,6 +1379,9 @@ final class AppModel {
     private func invalidateBrowseRequests() {
         browseNavigationGeneration += 1
         activeBrowseLoadOffsets.removeAll(keepingCapacity: true)
+        Task { [artworkPipeline] in
+            await artworkPipeline.cancelPrefetches()
+        }
     }
 
     private func beginBrowsePageRequest() -> BrowseRequestID {
@@ -1454,6 +1463,9 @@ final class AppModel {
             loadedBrowseLoadOffsets.removeAll(keepingCapacity: true)
             activeBrowseLoadOffsets.removeAll(keepingCapacity: true)
             browsePageGeneration += 1
+            Task { [artworkPipeline] in
+                await artworkPipeline.cancelPrefetches()
+            }
         }
 
         activeBrowseLoadOffsets.remove(incoming.offset)
@@ -1766,6 +1778,9 @@ final class AppModel {
 
     func prefetchArtworkAroundVisibleIndex(_ index: Int, for page: BrowsePage) {
         guard shouldPrefetchBrowseArtwork(for: page) else {
+            Task { [artworkPipeline] in
+                await artworkPipeline.cancelPrefetches()
+            }
             return
         }
 
@@ -1775,6 +1790,7 @@ final class AppModel {
             return
         }
 
+        var requests: [ArtworkPipelineRequest] = []
         for candidateIndex in lowerBound...upperBound {
             guard let item = browseItem(at: candidateIndex),
                   let imageKey = item.imageKey,
@@ -1783,34 +1799,21 @@ final class AppModel {
                 continue
             }
 
-            let variant = ArtworkCacheVariant(
+            let request = ArtworkPipelineRequest(
                 imageKey: imageKey,
                 width: browseGridArtworkPixelSize,
                 height: browseGridArtworkPixelSize,
                 format: "image/jpeg"
             )
-            let cacheKey = variant.cacheKey
+            requests.append(request)
+        }
 
-            if artworkCache.object(forKey: cacheKey as NSString) != nil {
-                continue
-            }
-            if artworkPrefetchTasks[cacheKey] != nil {
-                continue
-            }
-
-            artworkPrefetchTasks[cacheKey] = Task { @MainActor [weak self] in
-                defer {
-                    self?.artworkPrefetchTasks.removeValue(forKey: cacheKey)
-                }
-                guard let self else {
-                    return
-                }
-                _ = await self.loadArtwork(
-                    imageKey: imageKey,
-                    width: self.browseGridArtworkPixelSize,
-                    height: self.browseGridArtworkPixelSize
-                )
-            }
+        let loader = artworkFetchLoader()
+        Task { [artworkPipeline] in
+            await artworkPipeline.prefetch(
+                requests: requests,
+                fetchArtwork: loader
+            )
         }
     }
 

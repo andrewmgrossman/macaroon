@@ -366,7 +366,11 @@ struct AppModelTests {
         let page = try #require(model.browsePage)
         model.prefetchArtworkAroundVisibleIndex(20, for: page)
         model.prefetchArtworkAroundVisibleIndex(21, for: page)
-        try await Task.sleep(for: .milliseconds(200))
+        try await Task.sleep(for: .milliseconds(130))
+
+        #expect(await fetchCount.value <= 8)
+
+        try await Task.sleep(for: .milliseconds(700))
 
         #expect(await fetchCount.value == 26)
     }

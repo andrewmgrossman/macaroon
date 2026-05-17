@@ -237,6 +237,72 @@ struct NativeBrowseClientTests {
     }
 
     @Test
+    func searchSectionsUseSingleFastLimitedSessionForInitialResults() async throws {
+        let categoriesJSON = """
+        [{"title":"Artists","item_key":"artists","hint":"list"},{"title":"Tracks","item_key":"tracks","hint":"list"}]
+        """
+        var messages: [Data] = []
+        messages += try searchPreparationMessages(startingAt: 0, resultsItemsJSON: categoriesJSON)
+        messages += [
+            try browseSuccess(requestID: "6", body: """
+            {"action":"list","list":{"title":"Artists","count":42,"level":2,"display_offset":0}}
+            """),
+            try browseSuccess(requestID: "7", body: """
+            {"offset":0,"list":{"title":"Artists","count":42,"level":2,"display_offset":0},"items":[{"title":"Nirvana","item_key":"nirvana","hint":"list"},{"title":"Nick Drake","item_key":"nick-drake","hint":"list"}]}
+            """),
+            try browseSuccess(requestID: "8", body: """
+            {"action":"list","list":{"title":"Search","count":2,"level":1,"display_offset":0}}
+            """),
+            try browseSuccess(requestID: "9", body: """
+            {"action":"list","list":{"title":"Tracks","count":120,"level":2,"display_offset":0}}
+            """),
+            try browseSuccess(requestID: "10", body: """
+            {"offset":0,"list":{"title":"Tracks","count":120,"level":2,"display_offset":0},"items":[{"title":"Smells Like Teen Spirit","item_key":"track-1","hint":"action"},{"title":"Lithium","item_key":"track-2","hint":"action"}]}
+            """),
+            try browseSuccess(requestID: "11", body: """
+            {"action":"list","list":{"title":"Search","count":2,"level":1,"display_offset":0}}
+            """)
+        ]
+        let transport = MockNativeMooTransport(messages: messages)
+
+        let session = NativeMooSession(transportFactory: { transport }, currentPairedCoreID: nil)
+        try await session.connect(to: RoonCoreEndpoint(host: "10.0.7.148", port: 9330))
+
+        let client = NativeBrowseClient()
+        let result = try await client.searchSections(
+            session: session,
+            query: "nirvana",
+            zoneOrOutputID: "zone-1"
+        )
+
+        #expect(result.sections.map(\.kind) == [.artists, .tracks])
+        #expect(result.sections.first(where: { $0.kind == .artists })?.items.map(\.title) == ["Nirvana", "Nick Drake"])
+        #expect(result.sections.first(where: { $0.kind == .tracks })?.items.map(\.title) == ["Smells Like Teen Spirit", "Lithium"])
+
+        let rawSent = await transport.sentMessages()
+        let sent = try rawSent.map { try MooCodec.decodeMessage($0) }
+        #expect(sent.count == 12)
+
+        let indexRootBody = try JSONDecoder().decode(BrowseWireBody.self, from: try #require(sent[0].body))
+        let artistsRootBody = try JSONDecoder().decode(BrowseWireBody.self, from: try #require(sent[6].body))
+        let artistsLoadBody = try JSONDecoder().decode(BrowseWireBody.self, from: try #require(sent[7].body))
+        let artistsPopBody = try JSONDecoder().decode(BrowseWireBody.self, from: try #require(sent[8].body))
+        let tracksRootBody = try JSONDecoder().decode(BrowseWireBody.self, from: try #require(sent[9].body))
+        let tracksLoadBody = try JSONDecoder().decode(BrowseWireBody.self, from: try #require(sent[10].body))
+        let tracksPopBody = try JSONDecoder().decode(BrowseWireBody.self, from: try #require(sent[11].body))
+
+        #expect(indexRootBody.multi_session_key == "macaroon-search-results-1")
+        #expect(artistsRootBody.multi_session_key == "macaroon-search-results-1")
+        #expect(artistsLoadBody.multi_session_key == "macaroon-search-results-1")
+        #expect(artistsLoadBody.count == 24)
+        #expect(artistsPopBody.pop_levels == 1)
+        #expect(tracksRootBody.multi_session_key == "macaroon-search-results-1")
+        #expect(tracksLoadBody.multi_session_key == "macaroon-search-results-1")
+        #expect(tracksLoadBody.count == 30)
+        #expect(tracksPopBody.pop_levels == 1)
+    }
+
+    @Test
     func contextActionsUsesSearchSessionAndCleansUp() async throws {
         let transport = MockNativeMooTransport(messages: [
             try browseSuccess(requestID: "0", body: """
@@ -393,9 +459,33 @@ private func browseSuccess(requestID: String, body: String) throws -> Data {
     )
 }
 
+private func searchPreparationMessages(startingAt firstRequestID: Int, resultsItemsJSON: String) throws -> [Data] {
+    [
+        try browseSuccess(requestID: String(firstRequestID), body: """
+        {"action":"list","list":{"title":"Explore","count":1,"level":0,"display_offset":0}}
+        """),
+        try browseSuccess(requestID: String(firstRequestID + 1), body: """
+        {"offset":0,"list":{"title":"Explore","count":1,"level":0,"display_offset":0},"items":[{"title":"Library","item_key":"library","hint":"list"}]}
+        """),
+        try browseSuccess(requestID: String(firstRequestID + 2), body: """
+        {"action":"list","list":{"title":"Library","count":1,"level":1,"display_offset":0}}
+        """),
+        try browseSuccess(requestID: String(firstRequestID + 3), body: """
+        {"offset":0,"list":{"title":"Library","count":1,"level":1,"display_offset":0},"items":[{"title":"Search","item_key":"search-prompt","input_prompt":{"prompt":"Search","action":"Go"}}]}
+        """),
+        try browseSuccess(requestID: String(firstRequestID + 4), body: """
+        {"action":"none"}
+        """),
+        try browseSuccess(requestID: String(firstRequestID + 5), body: """
+        {"offset":0,"list":{"title":"Search","count":2,"level":1,"display_offset":0},"items":\(resultsItemsJSON)}
+        """)
+    ]
+}
+
 private struct BrowseWireBody: Decodable {
     var hierarchy: String
     var multi_session_key: String?
     var item_key: String?
     var pop_levels: Int?
+    var count: Int?
 }
